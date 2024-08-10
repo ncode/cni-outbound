@@ -16,6 +16,8 @@
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
+
+# golang
 .idea/
 
 # Go workspace file
@@ -24,3 +26,9 @@ go.work.sum
 
 # env file
 .env
+
+# the plugin binary
+output
+
+# mac
+.DS_Store
