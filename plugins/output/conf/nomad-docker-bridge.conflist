@@ -1,0 +1,55 @@
+{
+  "cniVersion": "0.4.0",
+  "name": "nomad-docker-bridge",
+  "plugins": [
+    {
+      "type": "bridge",
+      "bridge": "docker0",
+      "ipMasq": true,
+      "isGateway": true,
+      "forceAddress": true,
+      "hairpinMode": false,
+      "ipam": {
+        "type": "host-local",
+        "ranges": [
+          [
+            {
+              "subnet": "172.18.0.0/16"
+            }
+          ]
+        ],
+        "routes": [
+          { "dst": "0.0.0.0/0" }
+        ]
+      }
+    },
+    {
+      "type": "firewall",
+      "backend": "iptables",
+      "iptablesAdminChainName": "CNI-NDB"
+    },
+    {
+      "type": "output",
+      "chainName": "CNI-OUTBOUND",
+      "defaultAction": "DROP",
+      "outboundRules": [
+        {
+          "host": "8.8.8.8",
+          "proto": "udp",
+          "port": "53",
+          "action": "ACCEPT"
+        },
+        {
+          "host": "192.168.1.0/24",
+          "proto": "tcp",
+          "port": "80",
+          "action": "ACCEPT"
+        }
+      ]
+    },
+    {
+      "type": "portmap",
+      "capabilities": {"portMappings": true}
+    }
+  ]
+}
