@@ -17,7 +17,7 @@ The CNI Output Plugin is a Container Network Interface (CNI) plugin designed to 
 
 To install the CNI Output Plugin, follow these steps:
 
-1. Ensure you have Go installed on your system.
+1. Ensure you have Go installed on your system (version 1.15 or later recommended).
 2. Clone the repository:
    ```
    git clone https://github.com/ncode/cni-output.git
@@ -41,34 +41,21 @@ The plugin is configured as part of a CNI configuration file. Here's an example 
 
 ```json
 {
-  "cniVersion": "0.4.0",
-  "name": "nomad-docker-bridge",
+  "cniVersion": "1.0.0",
+  "name": "my-network",
   "plugins": [
     {
       "type": "bridge",
-      "bridge": "docker0",
+      "bridge": "cni0",
       "ipMasq": true,
       "isGateway": true,
-      "forceAddress": true,
-      "hairpinMode": false,
       "ipam": {
         "type": "host-local",
         "ranges": [
-          [
-            {
-              "subnet": "172.18.0.0/16"
-            }
-          ]
+          [{ "subnet": "172.18.0.0/16" }]
         ],
-        "routes": [
-          { "dst": "0.0.0.0/0" }
-        ]
+        "routes": [{ "dst": "0.0.0.0/0" }]
       }
-    },
-    {
-      "type": "firewall",
-      "backend": "iptables",
-      "iptablesAdminChainName": "CNI-NDB"
     },
     {
       "type": "output",
@@ -96,10 +83,6 @@ The plugin is configured as part of a CNI configuration file. Here's an example 
           "action": "ACCEPT"
         }
       ]
-    },
-    {
-      "type": "portmap",
-      "capabilities": {"portMappings": true}
     }
   ]
 }
@@ -119,8 +102,8 @@ This plugin is designed to be used as part of a CNI plugin chain. Include it in 
 To use the CNI Output Plugin:
 
 1. Install the plugin in your CNI bin directory.
-2. Create a CNI configuration file (e.g., `/etc/cni/net.d/10-nomad-docker-bridge.conf`) with the content similar to the example above.
-3. Ensure that container runtimes or orchestrators (like Docker or Nomad) are configured to use this CNI configuration.
+2. Create a CNI configuration file (e.g., `/etc/cni/net.d/10-mynetwork.conf`) with content similar to the example above.
+3. Ensure that container runtimes or orchestrators (like Docker, Kubernetes, or Nomad) are configured to use this CNI configuration.
 
 The plugin will create the necessary iptables rules when containers are created and clean them up when containers are destroyed.
 
@@ -139,6 +122,23 @@ To contribute to the CNI Output Plugin:
 3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
 4. Push to the branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
+
+### Running Tests
+
+To run the unit tests for the plugin, use the following command:
+
+```
+go test ./...
+```
+
+## Troubleshooting
+
+If you encounter issues with the plugin, consider the following steps:
+
+1. Check the logs of your container runtime or orchestrator for any error messages.
+2. Verify that the plugin binary is correctly installed in the CNI bin directory.
+3. Ensure that the CNI configuration file is correctly formatted and located in the proper directory.
+4. Use `iptables -L` or `iptables-save` to inspect the current iptables rules and verify that the plugin is creating the expected chains and rules.
 
 ## License
 
