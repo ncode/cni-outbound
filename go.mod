@@ -1,4 +1,4 @@
-module github.com/ncode/cni-output
+module github.com/ncode/cni-outbound
 
 go 1.22.6
 

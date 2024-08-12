@@ -9,7 +9,7 @@ import (
 	"github.com/containernetworking/cni/pkg/version"
 	"github.com/containernetworking/plugins/pkg/utils"
 	bv "github.com/containernetworking/plugins/pkg/utils/buildversion"
-	"github.com/ncode/cni-output/pkg/iptables"
+	"github.com/ncode/cni-outbound/pkg/iptables"
 )
 
 type PluginConf struct {
