@@ -1,6 +1,6 @@
 {
   "cniVersion": "0.4.0",
-  "name": "nomad-docker-bridge",
+  "name": "my-network",
   "plugins": [
     {
       "type": "bridge",
