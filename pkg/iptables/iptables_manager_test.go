@@ -2,22 +2,22 @@ package iptables
 
 import (
 	"errors"
-	"reflect"
-	"slices"
 	"strings"
 	"testing"
+
+	"slices"
 )
 
 // Mock implementation of iptables.IPTables
 type mockIPTables struct {
 	chains map[string]bool
-	rules  map[string][][]string
+	rules  map[string][]string
 }
 
 func newMockIPTables() *mockIPTables {
 	return &mockIPTables{
 		chains: make(map[string]bool),
-		rules:  make(map[string][][]string),
+		rules:  make(map[string][]string),
 	}
 }
 
@@ -27,7 +27,7 @@ func (m *mockIPTables) NewChain(table, chain string) error {
 }
 
 func (m *mockIPTables) ClearChain(table, chain string) error {
-	m.rules[chain] = [][]string{}
+	m.rules[chain] = []string{}
 	return nil
 }
 
@@ -42,41 +42,38 @@ func (m *mockIPTables) ChainExists(table, chain string) (bool, error) {
 }
 
 func (m *mockIPTables) Append(table, chain string, rulespec ...string) error {
-	m.rules[chain] = append(m.rules[chain], rulespec)
+	m.rules[chain] = append(m.rules[chain], joinRule(chain, rulespec))
 	return nil
 }
 
 func (m *mockIPTables) Insert(table, chain string, pos int, rulespec ...string) error {
-	newRules := append([][]string{}, m.rules[chain][:pos-1]...)
-	newRules = append(newRules, rulespec)
-	newRules = append(newRules, m.rules[chain][pos-1:]...)
-	m.rules[chain] = newRules
+	rule := joinRule(chain, rulespec)
+	m.rules[chain] = slices.Insert(m.rules[chain], pos-1, rule)
 	return nil
 }
 
 func (m *mockIPTables) Delete(table, chain string, rulespec ...string) error {
-	for i, rule := range m.rules[chain] {
-		if reflect.DeepEqual(rule, rulespec) {
-			m.rules[chain] = append(m.rules[chain][:i], m.rules[chain][i+1:]...)
-			return nil
-		}
+	rule := joinRule(chain, rulespec)
+	if i := slices.Index(m.rules[chain], rule); i != -1 {
+		m.rules[chain] = slices.Delete(m.rules[chain], i, i+1)
+		return nil
 	}
 	return errors.New("rule not found")
 }
 
 func (m *mockIPTables) List(table, chain string) ([]string, error) {
-	var flatRules []string
-	for _, rule := range m.rules[chain] {
-		flatRules = append(flatRules, "-A "+chain+" "+strings.Join(rule, " "))
-	}
-	return flatRules, nil
+	return m.rules[chain], nil
+}
+
+func joinRule(chain string, rulespec []string) string {
+	return "-A " + chain + " " + strings.Join(rulespec, " ")
 }
 
 func TestIPTablesManager(t *testing.T) {
 	mockIpt := newMockIPTables()
 	manager := &IPTablesManager{
 		ipt:           mockIpt,
-		mainChainName: "MAIN_CHAIN",
+		mainChainName: "CNI-OUTBOUND",
 		defaultAction: "DROP",
 	}
 
@@ -85,9 +82,14 @@ func TestIPTablesManager(t *testing.T) {
 		if err != nil {
 			t.Errorf("EnsureMainChainExists failed: %v", err)
 		}
-		exists, _ := mockIpt.ChainExists("filter", "MAIN_CHAIN")
+		exists, _ := mockIpt.ChainExists("filter", "CNI-OUTBOUND")
 		if !exists {
 			t.Error("Main chain was not created")
+		}
+		rules, _ := mockIpt.List("filter", "FORWARD")
+		expectedRule := "-A FORWARD -j CNI-OUTBOUND"
+		if !slices.Contains(rules, expectedRule) {
+			t.Errorf("Jump to CNI-OUTBOUND not added to FORWARD chain. Rules: %v", rules)
 		}
 	})
 
@@ -101,8 +103,17 @@ func TestIPTablesManager(t *testing.T) {
 			t.Error("Container chain was not created")
 		}
 		rules, _ := mockIpt.List("filter", "CONTAINER_CHAIN")
-		if len(rules) != 1 || !strings.Contains(rules[0], "-j DROP") {
-			t.Error("Default action was not set for container chain")
+		if len(rules) != 2 {
+			t.Errorf("Expected 2 rules in container chain, got %d", len(rules))
+		}
+		expectedRules := []string{
+			"-A CONTAINER_CHAIN -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+			"-A CONTAINER_CHAIN -j DROP",
+		}
+		for _, rule := range expectedRules {
+			if !slices.Contains(rules, rule) {
+				t.Errorf("Expected rule not found: %s", rule)
+			}
 		}
 	})
 
@@ -124,8 +135,8 @@ func TestIPTablesManager(t *testing.T) {
 		if err != nil {
 			t.Errorf("AddJumpRule failed: %v", err)
 		}
-		rules, _ := mockIpt.List("filter", "MAIN_CHAIN")
-		expectedRule := "-A MAIN_CHAIN -s 10.0.0.1 -j CONTAINER_CHAIN"
+		rules, _ := mockIpt.List("filter", "CNI-OUTBOUND")
+		expectedRule := "-A CNI-OUTBOUND -s 10.0.0.1 -j CONTAINER_CHAIN"
 		if !slices.Contains(rules, expectedRule) {
 			t.Errorf("Jump rule was not added correctly. Got %v, want %v", rules, expectedRule)
 		}
@@ -136,8 +147,8 @@ func TestIPTablesManager(t *testing.T) {
 		if err != nil {
 			t.Errorf("RemoveJumpRule failed: %v", err)
 		}
-		rules, _ := mockIpt.List("filter", "MAIN_CHAIN")
-		unexpectedRule := "-A MAIN_CHAIN -s 10.0.0.1 -j CONTAINER_CHAIN"
+		rules, _ := mockIpt.List("filter", "CNI-OUTBOUND")
+		unexpectedRule := "-A CNI-OUTBOUND -s 10.0.0.1 -j CONTAINER_CHAIN"
 		if slices.Contains(rules, unexpectedRule) {
 			t.Error("Jump rule was not removed")
 		}
@@ -155,12 +166,12 @@ func TestIPTablesManager(t *testing.T) {
 	})
 
 	t.Run("ChainExists", func(t *testing.T) {
-		exists, err := manager.ChainExists("MAIN_CHAIN")
+		exists, err := manager.ChainExists("CNI-OUTBOUND")
 		if err != nil {
 			t.Errorf("ChainExists failed: %v", err)
 		}
 		if !exists {
-			t.Error("MAIN_CHAIN should exist")
+			t.Error("CNI-OUTBOUND should exist")
 		}
 
 		exists, err = manager.ChainExists("NONEXISTENT_CHAIN")
@@ -179,18 +190,18 @@ func TestIPTablesManager(t *testing.T) {
 			{Host: "10.0.0.0/24", Proto: "udp", Port: "53", Action: "ACCEPT"},
 		}
 		for _, rule := range rules {
-			manager.AddRule("MAIN_CHAIN", rule)
+			manager.AddRule("CNI-OUTBOUND", rule)
 		}
 
 		// Now verify them
-		err := manager.VerifyRules("MAIN_CHAIN", rules)
+		err := manager.VerifyRules("CNI-OUTBOUND", rules)
 		if err != nil {
 			t.Errorf("VerifyRules failed: %v", err)
 		}
 
 		// Try to verify a non-existent rule
 		nonExistentRule := OutboundRule{Host: "172.16.0.1", Proto: "tcp", Port: "443", Action: "DROP"}
-		err = manager.VerifyRules("MAIN_CHAIN", []OutboundRule{nonExistentRule})
+		err = manager.VerifyRules("CNI-OUTBOUND", []OutboundRule{nonExistentRule})
 		if err == nil {
 			t.Error("VerifyRules should have failed for non-existent rule")
 		}
@@ -206,8 +217,8 @@ func TestIPTablesManager(t *testing.T) {
 			t.Errorf("RemoveJumpRuleByTargetChain failed: %v", err)
 		}
 
-		rules, _ := mockIpt.List("filter", "MAIN_CHAIN")
-		unexpectedRule := "-A MAIN_CHAIN -s 10.0.0.1 -j TARGET_CHAIN"
+		rules, _ := mockIpt.List("filter", "CNI-OUTBOUND")
+		unexpectedRule := "-A CNI-OUTBOUND -s 10.0.0.1 -j TARGET_CHAIN"
 		if slices.Contains(rules, unexpectedRule) {
 			t.Error("Jump rule was not removed")
 		}

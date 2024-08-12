@@ -56,12 +56,25 @@ func (m *IPTablesManager) EnsureMainChainExists() error {
 		}
 	}
 
+	// Remove any existing rule in the FORWARD chain (in case it's in the wrong place)
+	m.ipt.Delete("filter", "FORWARD", "-j", m.mainChainName)
+
+	// Add the jump to CNI-OUTBOUND at the beginning of the FORWARD chain
+	if err := m.ipt.Insert("filter", "FORWARD", 1, "-j", m.mainChainName); err != nil {
+		return fmt.Errorf("failed to add jump to main chain in FORWARD: %v", err)
+	}
+
 	return nil
 }
 
 func (m *IPTablesManager) CreateContainerChain(containerChain string) error {
 	if err := m.ipt.NewChain("filter", containerChain); err != nil {
 		return fmt.Errorf("failed to create container chain: %v", err)
+	}
+
+	// Add rule for RELATED,ESTABLISHED connections
+	if err := m.ipt.Append("filter", containerChain, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"); err != nil {
+		return fmt.Errorf("failed to add RELATED,ESTABLISHED rule: %v", err)
 	}
 
 	// Set the default action for the container chain
