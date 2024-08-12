@@ -32,6 +32,10 @@
       "iptablesAdminChainName": "CNI-NDB"
     },
     {
+      "type": "portmap",
+      "capabilities": {"portMappings": true}
+    },
+    {
       "type": "output",
       "chainName": "CNI-OUTBOUND",
       "defaultAction": "DROP",
@@ -49,10 +53,6 @@
           "action": "ACCEPT"
         }
       ]
-    },
-    {
-      "type": "portmap",
-      "capabilities": {"portMappings": true}
     }
   ]
 }
