@@ -3,6 +3,9 @@
   "name": "my-network",
   "plugins": [
     {
+      "type": "loopback"
+    }, 
+    {
       "type": "bridge",
       "bridge": "docker0",
       "ipMasq": true,
