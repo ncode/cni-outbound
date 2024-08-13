@@ -880,3 +880,70 @@ func TestRemoveJumpRuleByTargetChainError(t *testing.T) {
 		})
 	}
 }
+
+func TestIPTablesManager_ChainExists(t *testing.T) {
+	tests := []struct {
+		name           string
+		chainName      string
+		setupMock      func(*mockIPTables)
+		expectedResult bool
+		expectError    bool
+	}{
+		{
+			name:      "Chain exists",
+			chainName: "EXISTING_CHAIN",
+			setupMock: func(m *mockIPTables) {
+				m.chains["EXISTING_CHAIN"] = true
+			},
+			expectedResult: true,
+			expectError:    false,
+		},
+		{
+			name:      "Chain does not exist",
+			chainName: "NONEXISTENT_CHAIN",
+			setupMock: func(m *mockIPTables) {
+				// Do nothing, chain doesn't exist
+			},
+			expectedResult: false,
+			expectError:    false,
+		},
+		{
+			name:      "Error checking chain existence",
+			chainName: "ERROR_CHAIN",
+			setupMock: func(m *mockIPTables) {
+				m.SetError("ChainExists", errors.New("mock error"))
+			},
+			expectedResult: false,
+			expectError:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockIpt := newMockIPTables()
+			tt.setupMock(mockIpt)
+
+			manager := &IPTablesManager{
+				ipt:           mockIpt,
+				mainChainName: "CNI-OUTBOUND",
+				defaultAction: "DROP",
+			}
+
+			exists, err := manager.ChainExists(tt.chainName)
+
+			if tt.expectError {
+				if err == nil {
+					t.Error("Expected an error, but got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+				}
+			}
+
+			if exists != tt.expectedResult {
+				t.Errorf("Expected ChainExists to return %v, but got %v", tt.expectedResult, exists)
+			}
+		})
+	}
+}
