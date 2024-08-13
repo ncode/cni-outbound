@@ -947,3 +947,37 @@ func TestIPTablesManager_ChainExists(t *testing.T) {
 		})
 	}
 }
+
+func TestRemoveJumpRuleByTargetChainDeleteError(t *testing.T) {
+	mockIpt := newMockIPTables()
+	manager := &IPTablesManager{
+		ipt:           mockIpt,
+		mainChainName: "CNI-OUTBOUND",
+		defaultAction: "DROP",
+	}
+
+	// Set up the mock to return an error on Delete
+	mockIpt.SetError("Delete", errors.New("mock delete error"))
+
+	// Add a rule that we'll try to remove
+	targetChain := "TARGET_CHAIN"
+	mockIpt.rules["CNI-OUTBOUND"] = []string{
+		"-A CNI-OUTBOUND -s 10.0.0.1 -j TARGET_CHAIN",
+	}
+
+	err := manager.RemoveJumpRuleByTargetChain(targetChain)
+
+	if err == nil {
+		t.Fatal("Expected an error, but got nil")
+	}
+
+	expectedError := "failed to remove jump rule: mock delete error"
+	if err.Error() != expectedError {
+		t.Errorf("Expected error message '%s', but got: %s", expectedError, err.Error())
+	}
+
+	// Verify that the rule still exists
+	if len(mockIpt.rules["CNI-OUTBOUND"]) != 1 {
+		t.Error("Expected rule to still exist after Delete error")
+	}
+}
