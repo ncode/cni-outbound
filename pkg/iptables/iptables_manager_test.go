@@ -8,23 +8,33 @@ import (
 	"slices"
 )
 
-// Mock implementation of iptables.IPTables
 type mockIPTables struct {
-	chains           map[string]bool
-	rules            map[string][]string
-	chainExistsError error
+	chains       map[string]bool
+	rules        map[string][]string
+	methodErrors map[string]error
 }
 
 func newMockIPTables() *mockIPTables {
 	return &mockIPTables{
-		chains: make(map[string]bool),
-		rules:  make(map[string][]string),
+		chains:       make(map[string]bool),
+		rules:        make(map[string][]string),
+		methodErrors: make(map[string]error),
 	}
 }
 
 func (m *mockIPTables) NewChain(table, chain string) error {
+	if err := m.methodErrors["NewChain"]; err != nil {
+		return err
+	}
 	m.chains[chain] = true
 	return nil
+}
+
+func (m *mockIPTables) ChainExists(table, chain string) (bool, error) {
+	if err := m.methodErrors["ChainExists"]; err != nil {
+		return false, err
+	}
+	return m.chains[chain], nil
 }
 
 func (m *mockIPTables) ClearChain(table, chain string) error {
@@ -38,25 +48,28 @@ func (m *mockIPTables) DeleteChain(table, chain string) error {
 	return nil
 }
 
-func (m *mockIPTables) ChainExists(table, chain string) (bool, error) {
-	if m.chainExistsError != nil {
-		return false, m.chainExistsError
-	}
-	return m.chains[chain], nil
-}
-
 func (m *mockIPTables) Append(table, chain string, rulespec ...string) error {
 	m.rules[chain] = append(m.rules[chain], joinRule(chain, rulespec))
 	return nil
 }
 
 func (m *mockIPTables) Insert(table, chain string, pos int, rulespec ...string) error {
-	rule := joinRule(chain, rulespec)
-	m.rules[chain] = slices.Insert(m.rules[chain], pos-1, rule)
+	if err := m.methodErrors["Insert"]; err != nil {
+		return err
+	}
+	rule := strings.Join(rulespec, " ")
+	if m.rules[chain] == nil {
+		m.rules[chain] = []string{}
+	}
+	m.rules[chain] = append(m.rules[chain], rule)
 	return nil
 }
 
 func (m *mockIPTables) Delete(table, chain string, rulespec ...string) error {
+	if err := m.methodErrors["Delete"]; err != nil {
+		return err
+	}
+
 	rule := joinRule(chain, rulespec)
 	if i := slices.Index(m.rules[chain], rule); i != -1 {
 		m.rules[chain] = slices.Delete(m.rules[chain], i, i+1)
@@ -67,6 +80,16 @@ func (m *mockIPTables) Delete(table, chain string, rulespec ...string) error {
 
 func (m *mockIPTables) List(table, chain string) ([]string, error) {
 	return m.rules[chain], nil
+}
+
+// Helper method to set errors for testing
+func (m *mockIPTables) SetError(method string, err error) {
+	m.methodErrors[method] = err
+}
+
+// Helper method to clear errors
+func (m *mockIPTables) ClearErrors() {
+	m.methodErrors = make(map[string]error)
 }
 
 func joinRule(chain string, rulespec []string) string {
@@ -340,26 +363,59 @@ func TestNewIPTablesManagerError(t *testing.T) {
 	}
 }
 
-func TestEnsureMainChainExistsError(t *testing.T) {
-	// Create a mock IPTables that returns an error for ChainExists
-	mockIpt := &mockIPTables{
-		chainExistsError: errors.New("mock chain exists error"),
+func TestEnsureMainChainExistsErrors(t *testing.T) {
+	testCases := []struct {
+		name          string
+		errorMethod   string
+		expectedError string
+	}{
+		{
+			name:          "ChainExists Error",
+			errorMethod:   "ChainExists",
+			expectedError: "failed to check main chain existence: mock error",
+		},
+		{
+			name:          "NewChain Error",
+			errorMethod:   "NewChain",
+			expectedError: "failed to create main chain: mock error",
+		},
+		{
+			name:          "Insert Error",
+			errorMethod:   "Insert",
+			expectedError: "failed to add jump to main chain in FORWARD: mock error",
+		},
 	}
 
-	manager := &IPTablesManager{
-		ipt:           mockIpt,
-		mainChainName: "CNI-OUTBOUND",
-		defaultAction: "DROP",
-	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			mockIpt := newMockIPTables()
+			mockIpt.SetError(tc.errorMethod, errors.New("mock error"))
 
-	err := manager.EnsureMainChainExists()
+			manager := &IPTablesManager{
+				ipt:           mockIpt,
+				mainChainName: "CNI-OUTBOUND",
+				defaultAction: "DROP",
+			}
 
-	if err == nil {
-		t.Error("Expected an error, but got nil")
-	}
+			err := manager.EnsureMainChainExists()
 
-	expectedError := "failed to check main chain existence: mock chain exists error"
-	if err.Error() != expectedError {
-		t.Errorf("Expected error message '%s', but got: %s", expectedError, err.Error())
+			if err == nil {
+				t.Error("Expected an error, but got nil")
+			} else if err.Error() != tc.expectedError {
+				t.Errorf("Expected error message '%s', but got: %s", tc.expectedError, err.Error())
+			}
+
+			// Verify the state of the iptables after the error
+			if tc.errorMethod == "Insert" {
+				if !mockIpt.chains["CNI-OUTBOUND"] {
+					t.Error("Expected main chain to be created even if Insert fails")
+				}
+				if len(mockIpt.rules["FORWARD"]) > 0 {
+					t.Error("Expected no rules in FORWARD chain after Insert error")
+				}
+			}
+
+			mockIpt.ClearErrors()
+		})
 	}
 }
