@@ -7,6 +7,10 @@ import (
 	"github.com/coreos/go-iptables/iptables"
 )
 
+var newIPTables = func() (IPTablesWrapper, error) {
+	return iptables.New()
+}
+
 type OutboundRule struct {
 	Host   string
 	Proto  string
@@ -32,9 +36,17 @@ type IPTablesManager struct {
 }
 
 func NewIPTablesManager(mainChainName, defaultAction string) (*IPTablesManager, error) {
-	ipt, err := iptables.New()
+	ipt, err := newIPTables()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize iptables: %v", err)
+	}
+
+	if mainChainName == "" {
+		mainChainName = "CNI-OUTBOUND"
+	}
+
+	if defaultAction == "" {
+		defaultAction = "DROP"
 	}
 
 	return &IPTablesManager{

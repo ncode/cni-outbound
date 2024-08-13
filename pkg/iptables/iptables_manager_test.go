@@ -230,3 +230,90 @@ func TestIPTablesManager(t *testing.T) {
 		}
 	})
 }
+
+func TestNewIPTablesManager(t *testing.T) {
+	tests := []struct {
+		name           string
+		mainChainName  string
+		defaultAction  string
+		expectError    bool
+		errorSubstring string
+	}{
+		{
+			name:          "Valid initialization",
+			mainChainName: "CNI-OUTBOUND",
+			defaultAction: "DROP",
+			expectError:   false,
+		},
+		{
+			name:          "Empty main chain name",
+			mainChainName: "",
+			defaultAction: "DROP",
+			expectError:   false,
+		},
+		{
+			name:          "Empty default action",
+			mainChainName: "CNI-OUTBOUND",
+			defaultAction: "",
+			expectError:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			originalNewIPTables := newIPTables
+			newIPTables = func() (IPTablesWrapper, error) {
+				return newMockIPTables(), nil
+			}
+			// Restore the original function after the test
+			defer func() { newIPTables = originalNewIPTables }()
+
+			manager, err := NewIPTablesManager(tt.mainChainName, tt.defaultAction)
+
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("Expected an error, but got nil")
+				} else if tt.errorSubstring != "" && !strings.Contains(err.Error(), tt.errorSubstring) {
+					t.Errorf("Expected error containing '%s', but got: %v", tt.errorSubstring, err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+				}
+
+				if manager == nil {
+					t.Fatalf("Expected a non-nil IPTablesManager, but got nil")
+				}
+
+				// Check if the mainChainName is set correctly
+				expectedMainChain := tt.mainChainName
+				if expectedMainChain == "" {
+					expectedMainChain = "CNI-OUTBOUND" // default value
+				}
+				if manager.mainChainName != expectedMainChain {
+					t.Errorf("Expected mainChainName to be '%s', but got '%s'", expectedMainChain, manager.mainChainName)
+				}
+
+				// Check if the defaultAction is set correctly
+				expectedDefaultAction := tt.defaultAction
+				if expectedDefaultAction == "" {
+					expectedDefaultAction = "DROP" // default value
+				}
+				if manager.defaultAction != expectedDefaultAction {
+					t.Errorf("Expected defaultAction to be '%s', but got '%s'", expectedDefaultAction, manager.defaultAction)
+				}
+
+				// Check if the iptables instance is initialized
+				if manager.ipt == nil {
+					t.Errorf("Expected ipt to be initialized, but it's nil")
+				}
+
+				// Check if the initialized iptables instance is of type mockIPTables
+				_, ok := manager.ipt.(*mockIPTables)
+				if !ok {
+					t.Errorf("Expected ipt to be of type *mockIPTables, but it's not")
+				}
+			}
+		})
+	}
+}
