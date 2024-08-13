@@ -28,7 +28,8 @@ go.work.sum
 .env
 
 # the plugin binary
-output
+cni-outbound
+outbound
 
 # mac
 .DS_Store
