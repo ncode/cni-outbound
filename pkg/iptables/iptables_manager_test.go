@@ -981,3 +981,31 @@ func TestRemoveJumpRuleByTargetChainDeleteError(t *testing.T) {
 		t.Error("Expected rule to still exist after Delete error")
 	}
 }
+
+func TestVerifyRulesListError(t *testing.T) {
+	mockIpt := newMockIPTables()
+	manager := &IPTablesManager{
+		ipt:           mockIpt,
+		mainChainName: "CNI-OUTBOUND",
+		defaultAction: "DROP",
+	}
+
+	// Set up the mock to return an error on List
+	expectedError := errors.New("mock list error")
+	mockIpt.SetError("List", expectedError)
+
+	chainName := "TEST_CHAIN"
+	rules := []OutboundRule{
+		{Host: "192.168.1.1", Proto: "tcp", Port: "80", Action: "ACCEPT"},
+	}
+
+	err := manager.VerifyRules(chainName, rules)
+
+	if err == nil {
+		t.Fatal("Expected an error, but got nil")
+	}
+
+	if err != expectedError {
+		t.Errorf("Expected error '%v', but got: %v", expectedError, err)
+	}
+}
