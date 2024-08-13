@@ -14,14 +14,13 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
 
 type LogConfig struct {
-	Enable bool   `json:"enable"`
-	File   string `json:"file"`
+	Enable    bool   `json:"enable"`
+	Directory string `json:"directory"`
 }
 
 type PluginConf struct {
@@ -35,6 +34,10 @@ type PluginConf struct {
 
 var logger *slog.Logger
 
+var newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	return iptables.NewIPTablesManager(conf.MainChainName, conf.DefaultAction)
+}
+
 func setupLogging(conf *PluginConf) error {
 	if !conf.Logging.Enable {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -42,18 +45,18 @@ func setupLogging(conf *PluginConf) error {
 	}
 
 	var logWriter *os.File
-	if conf.Logging.File != "" {
-		currentDate := time.Now().Format("2006-01-02")
-		logFileName := fmt.Sprintf("%s-%s.log", strings.TrimSuffix(conf.Logging.File, filepath.Ext(conf.Logging.File)), currentDate)
-
-		file, err := os.OpenFile(logFileName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return fmt.Errorf("failed to open log file: %v", err)
-		}
-		logWriter = file
-	} else {
-		logWriter = os.Stderr
+	if conf.Logging.Directory == "" {
+		conf.Logging.Directory = "/var/log/cni"
 	}
+
+	currentDate := time.Now().Format("2006-01-02")
+	logFileName := fmt.Sprintf("%s/outbound-%s.log", strings.TrimSuffix(conf.Logging.Directory, "/"), currentDate)
+
+	file, err := os.OpenFile(logFileName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open log file: %v", err)
+	}
+	logWriter = file
 
 	opts := slog.HandlerOptions{
 		AddSource: true,
@@ -75,7 +78,6 @@ func parseAdditionalRules(args, containerID string) ([]iptables.OutboundRule, er
 		slog.String("containerID", containerID),
 		slog.String("details", args),
 	)
-	var additionalRules []iptables.OutboundRule
 
 	if args == "" {
 		logger.Log(context.Background(), slog.LevelInfo,
@@ -83,9 +85,10 @@ func parseAdditionalRules(args, containerID string) ([]iptables.OutboundRule, er
 			slog.String("component", "CNI-Outbound"),
 			slog.String("containerID", containerID),
 		)
-		return additionalRules, nil
+		return nil, nil // Return nil
 	}
 
+	var additionalRules []iptables.OutboundRule // Initialize as nil
 	kvs := strings.Split(args, ";")
 	for _, kv := range kvs {
 		parts := strings.SplitN(kv, "=", 2)
@@ -120,7 +123,6 @@ func parseAdditionalRules(args, containerID string) ([]iptables.OutboundRule, er
 	)
 	return additionalRules, nil
 }
-
 func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 	conf := PluginConf{}
 
@@ -222,7 +224,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 		slog.String("containerID", args.ContainerID),
 	)
 
-	iptManager, err := iptables.NewIPTablesManager(conf.MainChainName, conf.DefaultAction)
+	iptManager, err := newIPTablesManager(conf)
 	if err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to create IPTablesManager",
@@ -366,7 +368,7 @@ func cmdDel(args *skel.CmdArgs) error {
 		slog.String("containerID", args.ContainerID),
 	)
 
-	iptManager, err := iptables.NewIPTablesManager(conf.MainChainName, conf.DefaultAction)
+	iptManager, err := newIPTablesManager(conf)
 	if err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to create IPTablesManager",
@@ -441,7 +443,7 @@ func cmdCheck(args *skel.CmdArgs) error {
 		slog.String("containerID", args.ContainerID),
 	)
 
-	iptManager, err := iptables.NewIPTablesManager(conf.MainChainName, conf.DefaultAction)
+	iptManager, err := newIPTablesManager(conf)
 	if err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to create IPTablesManager",

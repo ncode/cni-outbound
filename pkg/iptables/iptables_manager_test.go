@@ -433,7 +433,8 @@ func TestNewIPTablesManager(t *testing.T) {
 			// Restore the original function after the test
 			defer func() { newIPTables = originalNewIPTables }()
 
-			manager, err := NewIPTablesManager(tt.mainChainName, tt.defaultAction)
+			managerInterface, err := NewIPTablesManager(tt.mainChainName, tt.defaultAction)
+			manager := managerInterface.(*IPTablesManager)
 
 			if tt.expectError {
 				if err == nil {
