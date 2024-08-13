@@ -1009,3 +1009,75 @@ func TestVerifyRulesListError(t *testing.T) {
 		t.Errorf("Expected error '%v', but got: %v", expectedError, err)
 	}
 }
+
+func TestClearAndDeleteChain(t *testing.T) {
+	tests := []struct {
+		name          string
+		chainName     string
+		setupMock     func(*mockIPTables)
+		expectedError string
+	}{
+		{
+			name:      "Successful clear and delete",
+			chainName: "TEST_CHAIN",
+			setupMock: func(m *mockIPTables) {
+				m.chains["TEST_CHAIN"] = true
+				m.rules["TEST_CHAIN"] = []string{"some rule"}
+			},
+			expectedError: "",
+		},
+		{
+			name:      "Error on clear",
+			chainName: "ERROR_CLEAR_CHAIN",
+			setupMock: func(m *mockIPTables) {
+				m.chains["ERROR_CLEAR_CHAIN"] = true
+				m.SetError("ClearChain", errors.New("mock clear error"))
+			},
+			expectedError: "failed to clear chain ERROR_CLEAR_CHAIN: mock clear error",
+		},
+		{
+			name:      "Error on delete",
+			chainName: "ERROR_DELETE_CHAIN",
+			setupMock: func(m *mockIPTables) {
+				m.chains["ERROR_DELETE_CHAIN"] = true
+				m.SetError("DeleteChain", errors.New("mock delete error"))
+			},
+			expectedError: "failed to delete chain ERROR_DELETE_CHAIN: mock delete error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockIpt := newMockIPTables()
+			tt.setupMock(mockIpt)
+
+			manager := &IPTablesManager{
+				ipt:           mockIpt,
+				mainChainName: "CNI-OUTBOUND",
+				defaultAction: "DROP",
+			}
+
+			err := manager.ClearAndDeleteChain(tt.chainName)
+
+			if tt.expectedError == "" {
+				if err != nil {
+					t.Errorf("Expected no error, but got: %v", err)
+				}
+				// Verify chain was deleted
+				if mockIpt.chains[tt.chainName] {
+					t.Error("Chain was not deleted")
+				}
+				// Verify rules were cleared
+				if rules, exists := mockIpt.rules[tt.chainName]; exists && len(rules) > 0 {
+					t.Error("Rules were not cleared")
+				}
+			} else {
+				if err == nil {
+					t.Error("Expected an error, but got nil")
+				} else if err.Error() != tt.expectedError {
+					t.Errorf("Expected error '%s', but got: %v", tt.expectedError, err)
+				}
+			}
+		})
+	}
+}
