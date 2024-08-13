@@ -317,3 +317,21 @@ func TestNewIPTablesManager(t *testing.T) {
 		})
 	}
 }
+
+func TestNewIPTablesManagerError(t *testing.T) {
+	// Override newIPTables to return an error
+	originalNewIPTables := newIPTables
+	newIPTables = func() (IPTablesWrapper, error) {
+		return nil, errors.New("mock iptables initialization error")
+	}
+	// Restore the original function after the test
+	defer func() { newIPTables = originalNewIPTables }()
+
+	_, err := NewIPTablesManager("TEST-CHAIN", "ACCEPT")
+	if err == nil {
+		t.Error("Expected an error, but got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to initialize iptables") {
+		t.Errorf("Expected error message to contain 'failed to initialize iptables', but got: %v", err)
+	}
+}
