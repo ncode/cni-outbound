@@ -88,7 +88,7 @@ The plugin is configured as part of a CNI configuration file. Here's an example 
       "defaultAction": "DROP",
       "logging": {
         "enable": true,
-        "file": "/var/log/cni/outbound.log"
+        "directory": "/var/log/cni"
       },
       "outboundRules": [
         {
@@ -109,11 +109,14 @@ The plugin is configured as part of a CNI configuration file. Here's an example 
 }
 ```
 
-Plugin-specific configuration:
-- `type`: Must be "outbound" for this plugin
-- `chainName`: The name of the main iptables chain (default: "CNI-OUTBOUND")
-- `defaultAction`: The default action for the container chain (default: "DROP")
-- `outboundRules`: A list of outbound rules to apply to each container
+Plugin-Specific Configuration Parameters:
+- `type`: Specifies the plugin type. For this plugin, it should be set to `"outbound"`.
+- `chainName`: Defines the name of the primary iptables chain. If not specified, it defaults to `"CNI-OUTBOUND"`.
+- `defaultAction`: Determines the default action (e.g., `"DROP"`, `"ACCEPT"`) for the container-specific chains. The default value is `"DROP"`.
+- `outboundRules`: An array of outbound rules that will be applied to each container.
+- `logging`:
+  - `enable`: A boolean value to enable (`true`) or disable (`false`) logging.
+  - `directory`: Specifies the directory where log files will be stored.
 
 ## Usage with Nomad
 
