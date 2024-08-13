@@ -104,6 +104,9 @@ func (m *mockIPTables) Delete(table, chain string, rulespec ...string) error {
 }
 
 func (m *mockIPTables) List(table, chain string) ([]string, error) {
+	if err := m.methodErrors["List"]; err != nil {
+		return nil, err
+	}
 	return m.rules[chain], nil
 }
 
@@ -691,6 +694,77 @@ func TestRemoveJumpRuleError(t *testing.T) {
 			} else if !tc.expectRuleRemoved && !ruleExists {
 				t.Errorf("Expected rule to exist, but it was removed: %s", expectedRule)
 			}
+
+			mockIpt.ClearErrors()
+		})
+	}
+}
+
+func TestRemoveJumpRuleByTargetChainError(t *testing.T) {
+	testCases := []struct {
+		name          string
+		targetChain   string
+		setupMock     func(*mockIPTables)
+		expectedError string
+		checkState    func(*testing.T, *mockIPTables)
+	}{
+		{
+			name:        "List Error",
+			targetChain: "TARGET_CHAIN",
+			setupMock: func(m *mockIPTables) {
+				m.SetError("List", errors.New("mock list error"))
+				// Add a rule that we're trying to remove
+				m.Append("filter", "CNI-OUTBOUND", "-j", "TARGET_CHAIN")
+			},
+			expectedError: "failed to list rules in main chain: mock list error",
+			checkState: func(t *testing.T, m *mockIPTables) {
+				rules := m.rules["CNI-OUTBOUND"]
+				found := false
+				for _, rule := range rules {
+					if strings.Contains(rule, "-j TARGET_CHAIN") {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Error("Expected rule to still exist after List error, but it was removed")
+				}
+			},
+		},
+		{
+			name:        "No Error When Rule Doesn't Exist",
+			targetChain: "NONEXISTENT_CHAIN",
+			setupMock: func(m *mockIPTables) {
+				// Don't add any rules, simulating a situation where the rule doesn't exist
+			},
+			expectedError: "jump rule for chain NONEXISTENT_CHAIN not found",
+			checkState: func(t *testing.T, m *mockIPTables) {
+				// No additional checks needed for this case
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			mockIpt := newMockIPTables()
+			tc.setupMock(mockIpt)
+
+			manager := &IPTablesManager{
+				ipt:           mockIpt,
+				mainChainName: "CNI-OUTBOUND",
+				defaultAction: "DROP",
+			}
+
+			err := manager.RemoveJumpRuleByTargetChain(tc.targetChain)
+
+			if err == nil {
+				t.Error("Expected an error, but got nil")
+			} else if err.Error() != tc.expectedError {
+				t.Errorf("Expected error message '%s', but got: %s", tc.expectedError, err.Error())
+			}
+
+			// Check the state after the operation
+			tc.checkState(t, mockIpt)
 
 			mockIpt.ClearErrors()
 		})
