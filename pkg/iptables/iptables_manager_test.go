@@ -352,7 +352,7 @@ func TestIPTablesManager(t *testing.T) {
 			{Host: "10.0.0.0/24", Proto: "udp", Port: "53", Action: "ACCEPT"},
 		}
 		for _, rule := range rules {
-			ruleSpec := fmt.Sprintf("-d %s -p %s --dport %s -j %s", rule.Host, rule.Proto, rule.Port, rule.Action)
+			ruleSpec := fmt.Sprintf("-A %s -d %s -p %s --dport %s -j %s", chainName, rule.Host, rule.Proto, rule.Port, rule.Action)
 			mockIpt.rules[chainName] = append(mockIpt.rules[chainName], ruleSpec)
 		}
 
@@ -367,6 +367,8 @@ func TestIPTablesManager(t *testing.T) {
 		err = manager.VerifyRules(chainName, []OutboundRule{nonExistentRule})
 		if err == nil {
 			t.Error("VerifyRules should have failed for non-existent rule")
+		} else if !strings.Contains(err.Error(), "rule not found") {
+			t.Errorf("Unexpected error message: %v", err)
 		}
 	})
 
