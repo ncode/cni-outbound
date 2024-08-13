@@ -23,7 +23,7 @@ The CNI Outbound Plugin is a Container Network Interface (CNI) plugin designed t
 
 To install the CNI Outbound Plugin, follow these steps:
 
-1. Ensure you have Go installed on your system (version 1.15 or later recommended).
+1. Ensure you have Go installed on your system (version 1.22 or later recommended).
 2. Clone the repository:
    ```
    git clone https://github.com/ncode/cni-outbound.git
@@ -43,7 +43,7 @@ To install the CNI Outbound Plugin, follow these steps:
 
 ## Configuration
 
-The plugin is configured as part of a CNI configuration file. Here's an example configuration for use with Nomad:
+The plugin is configured as part of a CNI configuration file. Here's an example configuration for Nomad:
 
 ```json
 {
@@ -81,12 +81,16 @@ The plugin is configured as part of a CNI configuration file. Here's an example 
     },
     {
       "type": "portmap",
-      "capabilities": {"portMappings": true}
+      "capabilities": { "portMappings": true }
     },
     {
       "type": "outbound",
       "chainName": "CNI-OUTBOUND",
       "defaultAction": "DROP",
+      "logging": {
+        "enable": true,
+        "file": "/var/log/cni/outbound.log"
+      },
       "outboundRules": [
         {
           "host": "0.0.0.0/0",
@@ -176,6 +180,29 @@ job "example" {
   group "app" {
     network {
       mode = "cni/my-network"
+
+       port "http" {
+          to = 8080
+       }
+
+       cni {
+          args = {
+             "outbound.additional_rules" = jsonencode([
+                {
+                   "host": "172.17.0.0/16",
+                   "proto": "tcp",
+                   "port": "5432",
+                   "action": "ACCEPT"
+                },
+                {
+                   "host": "10.0.0.0/8",
+                   "proto": "tcp",
+                   "port": "6379",
+                   "action": "ACCEPT"
+                }
+             ])
+          }
+       }
     }
 
     task "server" {
