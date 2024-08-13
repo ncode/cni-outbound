@@ -10,8 +10,9 @@ import (
 
 // Mock implementation of iptables.IPTables
 type mockIPTables struct {
-	chains map[string]bool
-	rules  map[string][]string
+	chains           map[string]bool
+	rules            map[string][]string
+	chainExistsError error
 }
 
 func newMockIPTables() *mockIPTables {
@@ -38,6 +39,9 @@ func (m *mockIPTables) DeleteChain(table, chain string) error {
 }
 
 func (m *mockIPTables) ChainExists(table, chain string) (bool, error) {
+	if m.chainExistsError != nil {
+		return false, m.chainExistsError
+	}
 	return m.chains[chain], nil
 }
 
@@ -333,5 +337,29 @@ func TestNewIPTablesManagerError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "failed to initialize iptables") {
 		t.Errorf("Expected error message to contain 'failed to initialize iptables', but got: %v", err)
+	}
+}
+
+func TestEnsureMainChainExistsError(t *testing.T) {
+	// Create a mock IPTables that returns an error for ChainExists
+	mockIpt := &mockIPTables{
+		chainExistsError: errors.New("mock chain exists error"),
+	}
+
+	manager := &IPTablesManager{
+		ipt:           mockIpt,
+		mainChainName: "CNI-OUTBOUND",
+		defaultAction: "DROP",
+	}
+
+	err := manager.EnsureMainChainExists()
+
+	if err == nil {
+		t.Error("Expected an error, but got nil")
+	}
+
+	expectedError := "failed to check main chain existence: mock chain exists error"
+	if err.Error() != expectedError {
+		t.Errorf("Expected error message '%s', but got: %s", expectedError, err.Error())
 	}
 }
