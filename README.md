@@ -115,7 +115,6 @@ Plugin-specific configuration:
 - `chainName`: The name of the main iptables chain (default: "CNI-OUTBOUND")
 - `defaultAction`: The default action for the container chain (default: "DROP")
 - `outboundRules`: A list of outbound rules to apply to each container
-- `runtimeRules`: A list of rules that can be dynamically added or removed at runtime (optional)
 
 ## Usage with Nomad
 
@@ -141,12 +140,6 @@ To use the CNI Outbound Plugin with Nomad:
    ```
 
 The plugin will create the necessary iptables rules when Nomad launches containers and clean them up when containers are destroyed.
-
-### Runtime Rules
-
-Runtime rules allow for dynamic modification of the firewall rules without changing the CNI configuration. These rules can be added or removed while containers are running, providing flexibility in managing network traffic.
-
-To add or remove runtime rules, you'll need to use the plugin's runtime API (details of which should be documented separately, based on how your plugin implements this feature).
 
 ## Development
 
