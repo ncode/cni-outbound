@@ -107,7 +107,11 @@ func (m *IPTablesManager) AddJumpRule(sourceIP, targetChain string) error {
 }
 
 func (m *IPTablesManager) RemoveJumpRule(sourceIP, targetChain string) error {
-	return m.ipt.Delete("filter", m.mainChainName, "-s", sourceIP, "-j", targetChain)
+	err := m.ipt.Delete("filter", m.mainChainName, "-s", sourceIP, "-j", targetChain)
+	if err != nil {
+		return fmt.Errorf("failed to remove jump rule: %v", err)
+	}
+	return nil
 }
 
 func (m *IPTablesManager) ClearAndDeleteChain(chainName string) error {

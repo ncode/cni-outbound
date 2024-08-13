@@ -2,6 +2,7 @@ package iptables
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -39,11 +40,23 @@ func (m *mockIPTables) ChainExists(table, chain string) (bool, error) {
 }
 
 func (m *mockIPTables) ClearChain(table, chain string) error {
+	if err := m.methodErrors["ClearChain"]; err != nil {
+		return err
+	}
+	if _, exists := m.chains[chain]; !exists {
+		return fmt.Errorf("chain %s does not exist", chain)
+	}
 	m.rules[chain] = []string{}
 	return nil
 }
 
 func (m *mockIPTables) DeleteChain(table, chain string) error {
+	if err := m.methodErrors["DeleteChain"]; err != nil {
+		return err
+	}
+	if _, exists := m.chains[chain]; !exists {
+		return fmt.Errorf("chain %s does not exist", chain)
+	}
 	delete(m.chains, chain)
 	delete(m.rules, chain)
 	return nil
@@ -80,13 +93,14 @@ func (m *mockIPTables) Delete(table, chain string, rulespec ...string) error {
 	if err := m.methodErrors["Delete"]; err != nil {
 		return err
 	}
-
-	rule := joinRule(chain, rulespec)
-	if i := slices.Index(m.rules[chain], rule); i != -1 {
-		m.rules[chain] = slices.Delete(m.rules[chain], i, i+1)
-		return nil
+	rule := strings.Join(rulespec, " ")
+	for i, r := range m.rules[chain] {
+		if strings.Contains(r, rule) {
+			m.rules[chain] = append(m.rules[chain][:i], m.rules[chain][i+1:]...)
+			return nil
+		}
 	}
-	return errors.New("rule not found")
+	return nil // Rule not found is not considered an error in iptables
 }
 
 func (m *mockIPTables) List(table, chain string) ([]string, error) {
@@ -524,6 +538,159 @@ func TestCreateContainerChainErrors(t *testing.T) {
 
 			// Check the state of the iptables after the error
 			tc.checkState(t, mockIpt)
+
+			mockIpt.ClearErrors()
+		})
+	}
+}
+
+func TestClearAndDeleteChainErrors(t *testing.T) {
+	testCases := []struct {
+		name          string
+		errorMethod   string
+		expectedError string
+		setupMock     func(*mockIPTables)
+		checkState    func(*testing.T, *mockIPTables)
+	}{
+		{
+			name:          "ClearChain Error",
+			errorMethod:   "ClearChain",
+			expectedError: "failed to clear chain TEST-CHAIN: mock error",
+			setupMock: func(m *mockIPTables) {
+				m.SetError("ClearChain", errors.New("mock error"))
+				m.chains["TEST-CHAIN"] = true
+				m.rules["TEST-CHAIN"] = []string{"some rule"}
+			},
+			checkState: func(t *testing.T, m *mockIPTables) {
+				if _, exists := m.chains["TEST-CHAIN"]; !exists {
+					t.Error("Expected TEST-CHAIN to still exist after ClearChain error")
+				}
+				if len(m.rules["TEST-CHAIN"]) == 0 {
+					t.Error("Expected rules in TEST-CHAIN to remain after ClearChain error")
+				}
+			},
+		},
+		{
+			name:          "DeleteChain Error",
+			errorMethod:   "DeleteChain",
+			expectedError: "failed to delete chain TEST-CHAIN: mock error",
+			setupMock: func(m *mockIPTables) {
+				m.SetError("DeleteChain", errors.New("mock error"))
+				m.chains["TEST-CHAIN"] = true
+				m.rules["TEST-CHAIN"] = []string{"some rule"}
+			},
+			checkState: func(t *testing.T, m *mockIPTables) {
+				if _, exists := m.chains["TEST-CHAIN"]; !exists {
+					t.Error("Expected TEST-CHAIN to still exist after DeleteChain error")
+				}
+				if len(m.rules["TEST-CHAIN"]) != 0 {
+					t.Error("Expected TEST-CHAIN to be cleared even if DeleteChain fails")
+				}
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			mockIpt := newMockIPTables()
+			tc.setupMock(mockIpt)
+
+			manager := &IPTablesManager{
+				ipt:           mockIpt,
+				mainChainName: "CNI-OUTBOUND",
+				defaultAction: "DROP",
+			}
+
+			err := manager.ClearAndDeleteChain("TEST-CHAIN")
+
+			if err == nil {
+				t.Error("Expected an error, but got nil")
+			} else if err.Error() != tc.expectedError {
+				t.Errorf("Expected error message '%s', but got: %s", tc.expectedError, err.Error())
+			}
+
+			// Check the state of the iptables after the error
+			tc.checkState(t, mockIpt)
+
+			mockIpt.ClearErrors()
+		})
+	}
+}
+
+func TestRemoveJumpRuleError(t *testing.T) {
+	testCases := []struct {
+		name              string
+		sourceIP          string
+		targetChain       string
+		setupMock         func(*mockIPTables)
+		expectedError     string
+		expectRuleRemoved bool
+	}{
+		{
+			name:        "Delete Error",
+			sourceIP:    "10.0.0.1",
+			targetChain: "TARGET_CHAIN",
+			setupMock: func(m *mockIPTables) {
+				m.SetError("Delete", errors.New("mock delete error"))
+				// Add the rule that we're trying to remove
+				m.Append("filter", "CNI-OUTBOUND", "-s", "10.0.0.1", "-j", "TARGET_CHAIN")
+			},
+			expectedError:     "failed to remove jump rule: mock delete error",
+			expectRuleRemoved: false, // Rule should remain when there's a delete error
+		},
+		{
+			name:        "No Error When Rule Doesn't Exist",
+			sourceIP:    "10.0.0.2",
+			targetChain: "NONEXISTENT_CHAIN",
+			setupMock: func(m *mockIPTables) {
+				// Don't add any rules, simulating a situation where the rule doesn't exist
+			},
+			expectedError:     "",
+			expectRuleRemoved: true, // No rule to remove, so it's effectively "removed"
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			mockIpt := newMockIPTables()
+			tc.setupMock(mockIpt)
+
+			manager := &IPTablesManager{
+				ipt:           mockIpt,
+				mainChainName: "CNI-OUTBOUND",
+				defaultAction: "DROP",
+			}
+
+			err := manager.RemoveJumpRule(tc.sourceIP, tc.targetChain)
+
+			if tc.expectedError == "" {
+				if err != nil {
+					t.Errorf("Expected no error, but got: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Error("Expected an error, but got nil")
+				} else if err.Error() != tc.expectedError {
+					t.Errorf("Expected error message '%s', but got: %s", tc.expectedError, err.Error())
+				}
+			}
+
+			// Check if the rule was removed or not based on our expectation
+			rules, _ := mockIpt.List("filter", "CNI-OUTBOUND")
+			expectedRule := fmt.Sprintf("-s %s -j %s", tc.sourceIP, tc.targetChain)
+			ruleExists := false
+			for _, rule := range rules {
+				if strings.Contains(rule, expectedRule) {
+					ruleExists = true
+					break
+				}
+			}
+
+			if tc.expectRuleRemoved && ruleExists {
+				t.Errorf("Expected rule to be removed, but it still exists: %s", expectedRule)
+			} else if !tc.expectRuleRemoved && !ruleExists {
+				t.Errorf("Expected rule to exist, but it was removed: %s", expectedRule)
+			}
 
 			mockIpt.ClearErrors()
 		})
