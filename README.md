@@ -89,7 +89,7 @@ The plugin is configured as part of a CNI configuration file. Here's an example 
       "defaultAction": "DROP",
       "outboundRules": [
         {
-          "host": "8.8.8.8",
+          "host": "0.0.0.0/0",
           "proto": "udp",
           "port": "53",
           "action": "ACCEPT"
@@ -97,7 +97,7 @@ The plugin is configured as part of a CNI configuration file. Here's an example 
         {
           "host": "192.168.1.0/24",
           "proto": "tcp",
-          "port": "80",
+          "port": "443",
           "action": "ACCEPT"
         }
       ]

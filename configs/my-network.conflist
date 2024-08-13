@@ -36,12 +36,12 @@
       "capabilities": {"portMappings": true}
     },
     {
-      "type": "output",
+      "type": "outbound",
       "chainName": "CNI-OUTBOUND",
       "defaultAction": "DROP",
       "outboundRules": [
         {
-          "host": "8.8.8.8",
+          "host": "0.0.0.0/0",
           "proto": "udp",
           "port": "53",
           "action": "ACCEPT"
