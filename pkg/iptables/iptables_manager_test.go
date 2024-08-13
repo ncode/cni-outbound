@@ -12,6 +12,7 @@ type mockIPTables struct {
 	chains       map[string]bool
 	rules        map[string][]string
 	methodErrors map[string]error
+	appendFunc   func(table, chain string, rulespec ...string) error
 }
 
 func newMockIPTables() *mockIPTables {
@@ -49,7 +50,17 @@ func (m *mockIPTables) DeleteChain(table, chain string) error {
 }
 
 func (m *mockIPTables) Append(table, chain string, rulespec ...string) error {
-	m.rules[chain] = append(m.rules[chain], joinRule(chain, rulespec))
+	if m.appendFunc != nil {
+		return m.appendFunc(table, chain, rulespec...)
+	}
+	if err := m.methodErrors["Append"]; err != nil {
+		return err
+	}
+	rule := strings.Join(rulespec, " ")
+	if m.rules[chain] == nil {
+		m.rules[chain] = []string{}
+	}
+	m.rules[chain] = append(m.rules[chain], rule)
 	return nil
 }
 
@@ -414,6 +425,105 @@ func TestEnsureMainChainExistsErrors(t *testing.T) {
 					t.Error("Expected no rules in FORWARD chain after Insert error")
 				}
 			}
+
+			mockIpt.ClearErrors()
+		})
+	}
+}
+
+func TestCreateContainerChainErrors(t *testing.T) {
+	testCases := []struct {
+		name          string
+		errorMethod   string
+		expectedError string
+		setupMock     func(*mockIPTables)
+		checkState    func(*testing.T, *mockIPTables)
+	}{
+		{
+			name:          "NewChain Error",
+			errorMethod:   "NewChain",
+			expectedError: "failed to create container chain: mock error",
+			setupMock: func(m *mockIPTables) {
+				m.SetError("NewChain", errors.New("mock error"))
+			},
+			checkState: func(t *testing.T, m *mockIPTables) {
+				if _, exists := m.chains["TEST-CONTAINER-CHAIN"]; exists {
+					t.Error("Expected container chain to not be created after NewChain error")
+				}
+			},
+		},
+		{
+			name:          "Append RELATED,ESTABLISHED Rule Error",
+			errorMethod:   "Append",
+			expectedError: "failed to add RELATED,ESTABLISHED rule: mock error",
+			setupMock: func(m *mockIPTables) {
+				m.SetError("Append", errors.New("mock error"))
+			},
+			checkState: func(t *testing.T, m *mockIPTables) {
+				if _, exists := m.chains["TEST-CONTAINER-CHAIN"]; !exists {
+					t.Error("Expected container chain to be created even if first Append fails")
+				}
+				if len(m.rules["TEST-CONTAINER-CHAIN"]) > 0 {
+					t.Error("Expected no rules in container chain after first Append error")
+				}
+			},
+		},
+		{
+			name:          "Append Default Action Rule Error",
+			errorMethod:   "Append",
+			expectedError: "failed to set default action for container chain: mock error",
+			setupMock: func(m *mockIPTables) {
+				callCount := 0
+				m.appendFunc = func(table, chain string, rulespec ...string) error {
+					callCount++
+					if callCount == 2 { // The second Append call is for the default action
+						return errors.New("mock error")
+					}
+					// Simulate successful append for the first call
+					rule := strings.Join(rulespec, " ")
+					if m.rules[chain] == nil {
+						m.rules[chain] = []string{}
+					}
+					m.rules[chain] = append(m.rules[chain], rule)
+					return nil
+				}
+			},
+			checkState: func(t *testing.T, m *mockIPTables) {
+				if _, exists := m.chains["TEST-CONTAINER-CHAIN"]; !exists {
+					t.Error("Expected container chain to be created")
+				}
+				if len(m.rules["TEST-CONTAINER-CHAIN"]) != 1 {
+					t.Errorf("Expected only RELATED,ESTABLISHED rule in container chain, got %d rules", len(m.rules["TEST-CONTAINER-CHAIN"]))
+				}
+				expectedRule := "-m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"
+				if len(m.rules["TEST-CONTAINER-CHAIN"]) > 0 && !strings.Contains(m.rules["TEST-CONTAINER-CHAIN"][0], expectedRule) {
+					t.Errorf("Expected RELATED,ESTABLISHED rule, got: %s", m.rules["TEST-CONTAINER-CHAIN"][0])
+				}
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			mockIpt := newMockIPTables()
+			tc.setupMock(mockIpt)
+
+			manager := &IPTablesManager{
+				ipt:           mockIpt,
+				mainChainName: "CNI-OUTBOUND",
+				defaultAction: "DROP",
+			}
+
+			err := manager.CreateContainerChain("TEST-CONTAINER-CHAIN")
+
+			if err == nil {
+				t.Error("Expected an error, but got nil")
+			} else if err.Error() != tc.expectedError {
+				t.Errorf("Expected error message '%s', but got: %s", tc.expectedError, err.Error())
+			}
+
+			// Check the state of the iptables after the error
+			tc.checkState(t, mockIpt)
 
 			mockIpt.ClearErrors()
 		})
