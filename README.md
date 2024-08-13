@@ -7,7 +7,7 @@
 
 ## Overview
 
-The CNI Outbound Plugin is a Container Network Interface (CNI) plugin designed to manage outbound network traffic for containers in Nomad environments. It creates and manages iptables rules to control outbound connections based on specified configurations and supports dynamic runtime rules.
+The CNI Outbound Plugin is a Container Network Interface (CNI) plugin built to manage outbound network traffic for containers. It handles the creation and management of iptables rules to control outbound connections. The plugin supports both a global rule set defined in its default configuration and container-specific rules provided through the job file.
 
 ## Features
 
@@ -17,7 +17,6 @@ The CNI Outbound Plugin is a Container Network Interface (CNI) plugin designed t
 - Supports runtime rules for dynamic traffic control
 - Supports ADD, DEL, and CHECK operations as per CNI specification
 - Integrates with existing CNI plugins as a chained plugin
-- Specifically designed for use with Nomad
 
 ## Installation
 
