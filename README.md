@@ -1,5 +1,10 @@
 # CNI Outbound Plugin
 
+[![Go](https://github.com/ncode/cni-outbound/actions/workflows/go.yml/badge.svg)](https://github.com/ncode/cni-outbound/actions/workflows/go.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/ncode/cni-outbound)](https://goreportcard.com/report/github.com/ncode/cni-outbound)
+[![codecov](https://codecov.io/gh/ncode/cni-outbound/graph/badge.svg?token=AW3IMI6P6W)](https://codecov.io/gh/ncode/cni-outbound)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
 ## Overview
 
 The CNI Outbound Plugin is a Container Network Interface (CNI) plugin designed to manage outbound network traffic for containers in Nomad environments. It creates and manages iptables rules to control outbound connections based on specified configurations and supports dynamic runtime rules.
