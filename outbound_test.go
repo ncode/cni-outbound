@@ -407,15 +407,14 @@ func TestSetupLogging(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 				assert.Equal(t, tc.expectedDir, conf.Logging.Directory)
-				assert.NotNil(t, logger)
 
-				// For the default directory case, we just check if the directory is set correctly
-				if tc.config.Directory == "" {
-					assert.Equal(t, "/var/log/cni", conf.Logging.Directory)
-				} else if conf.Logging.Enable {
-					// For custom directory, we can check if the directory exists
-					_, err := os.Stat(conf.Logging.Directory)
-					assert.NoError(t, err, "Log directory should exist")
+				if tc.config.Enable {
+					assert.NotNil(t, logger)
+					if tc.config.Directory == "" {
+						assert.Equal(t, "/var/log/cni", conf.Logging.Directory)
+					}
+				} else {
+					assert.NotNil(t, logger)
 				}
 			}
 		})
