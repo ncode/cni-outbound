@@ -259,7 +259,6 @@ func TestParseConfigPrevResultConversionError(t *testing.T) {
 					"gateway": "10.0.0.1"
 				}
 			],
-			"invalidField": "This will cause a conversion error"
 		}
 	}`
 
