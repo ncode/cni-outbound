@@ -1281,6 +1281,8 @@ func TestCmdDelParseConfigError(t *testing.T) {
 		StdinData:   []byte(input),
 	}
 
+	mockManager := new(MockIPTablesManager)
+
 	// Override newIPTablesManager
 	origNewIPTablesManager := newIPTablesManager
 	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
