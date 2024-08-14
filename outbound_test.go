@@ -2,12 +2,14 @@ package main
 
 import (
 	"fmt"
-	"testing"
-
 	"github.com/containernetworking/cni/pkg/skel"
+	"github.com/containernetworking/cni/pkg/types"
 	"github.com/ncode/cni-outbound/pkg/iptables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"os"
+	"path/filepath"
+	"testing"
 )
 
 type MockIPTablesManager struct {
@@ -60,22 +62,75 @@ func (m *MockIPTablesManager) VerifyRules(chainName string, rules []iptables.Out
 }
 
 func TestParseConfig(t *testing.T) {
-	input := `{
-		"cniVersion": "0.4.0",
-		"name": "test-net",
-		"type": "outbound",
-		"mainChainName": "TEST-OUTBOUND",
-		"defaultAction": "ACCEPT",
-		"outboundRules": [
-			{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
-		]
-	}`
+	testCases := []struct {
+		name           string
+		input          string
+		args           string
+		containerID    string
+		expectedConfig *PluginConf
+		expectedError  string
+	}{
+		{
+			name: "Valid configuration",
+			input: `{
+				"cniVersion": "0.4.0",
+				"name": "test-net",
+				"type": "outbound",
+				"mainChainName": "TEST-OUTBOUND",
+				"defaultAction": "ACCEPT",
+				"outboundRules": [
+					{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+				]
+			}`,
+			args:        "",
+			containerID: "test-container",
+			expectedConfig: &PluginConf{
+				NetConf: types.NetConf{
+					CNIVersion: "0.4.0",
+					Name:       "test-net",
+					Type:       "outbound",
+				},
+				MainChainName: "TEST-OUTBOUND",
+				DefaultAction: "ACCEPT",
+				OutboundRules: []iptables.OutboundRule{
+					{Host: "8.8.8.8", Proto: "udp", Port: "53", Action: "ACCEPT"},
+				},
+			},
+			expectedError: "",
+		},
+		{
+			name: "Invalid JSON",
+			input: `{
+				"cniVersion": "0.4.0",
+				"name": "test-net",
+				"type": "outbound",
+				"mainChainName": "TEST-OUTBOUND",
+				"defaultAction": "ACCEPT",
+				"outboundRules": [
+					{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+				],
+			}`, // Note the trailing comma, which makes this invalid JSON
+			args:           "",
+			containerID:    "test-container",
+			expectedConfig: nil,
+			expectedError:  "failed to parse network configuration",
+		},
+	}
 
-	conf, err := parseConfig([]byte(input), "", "test-container")
-	assert.NoError(t, err)
-	assert.Equal(t, "TEST-OUTBOUND", conf.MainChainName)
-	assert.Equal(t, "ACCEPT", conf.DefaultAction)
-	assert.Len(t, conf.OutboundRules, 1)
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			conf, err := parseConfig([]byte(tc.input), tc.args, tc.containerID)
+
+			if tc.expectedError != "" {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tc.expectedError)
+				assert.Nil(t, conf)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tc.expectedConfig, conf)
+			}
+		})
+	}
 }
 
 func TestCmdAdd(t *testing.T) {
@@ -291,12 +346,86 @@ func TestGenerateChainName(t *testing.T) {
 }
 
 func TestSetupLogging(t *testing.T) {
-	conf := &PluginConf{
-		Logging: LogConfig{
-			Enable: false,
-		},
+	// Create a temporary directory for testing
+	tempDir, err := os.MkdirTemp("", "cni-outbound-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	err := setupLogging(conf)
-	assert.NoError(t, err)
-	assert.NotNil(t, logger)
+	defer os.RemoveAll(tempDir) // Clean up after the test
+
+	testCases := []struct {
+		name          string
+		config        LogConfig
+		expectedDir   string
+		expectedError bool
+	}{
+		{
+			name: "Logging disabled",
+			config: LogConfig{
+				Enable: false,
+			},
+			expectedDir:   "",
+			expectedError: false,
+		},
+		{
+			name: "Logging enabled with custom directory",
+			config: LogConfig{
+				Enable:    true,
+				Directory: filepath.Join(tempDir, "custom"),
+			},
+			expectedDir:   filepath.Join(tempDir, "custom"),
+			expectedError: false,
+		},
+		//{
+		//	name: "Logging enabled with default directory",
+		//	config: LogConfig{
+		//		Enable:    true,
+		//		Directory: "/var/log/cni",
+		//	},
+		//	expectedDir:   "/var/log/cni",
+		//	expectedError: false,
+		//},
+		//{
+		//	name: "Logging enabled with empty directory",
+		//	config: LogConfig{
+		//		Enable:    true,
+		//		Directory: "",
+		//	},
+		//	expectedDir:   "/var/log/cni",
+		//	expectedError: false,
+		//},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			conf := &PluginConf{
+				Logging: tc.config,
+			}
+
+			if tc.config.Enable && tc.config.Directory != "" {
+				err := os.MkdirAll(tc.config.Directory, 0755)
+				if err != nil {
+					t.Fatalf("Failed to create directory: %v", err)
+				}
+			}
+
+			err := setupLogging(conf)
+
+			if tc.expectedError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tc.expectedDir, conf.Logging.Directory)
+
+				if tc.config.Enable {
+					assert.NotNil(t, logger)
+					if tc.config.Directory == "" {
+						assert.Equal(t, "/var/log/cni", conf.Logging.Directory)
+					}
+				} else {
+					assert.NotNil(t, logger)
+				}
+			}
+		})
+	}
 }
