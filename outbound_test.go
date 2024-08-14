@@ -134,6 +134,34 @@ func TestParseConfig(t *testing.T) {
 			expectedConfig: nil,
 			expectedError:  "failed to setup logging: failed to open log file",
 		},
+		{
+			name: "Error missing required fields",
+			input: `{
+				"cniVersion": "0.4.0",
+				"name": "test-net",
+				"type": "outbound",
+				"mainChainName": "TEST-OUTBOUND",
+				"defaultAction": "ACCEPT",
+				"logging": { "enable": true, "directory": "" },
+				"outboundRules": [
+					{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+				],
+				"prevResult": {
+					"cniVersion": "0.4.0",
+					"interfaces": [
+						{
+							"name": "eth0",
+							"mac": "00:11:22:33:44:55"
+						}
+					],
+					"ips": []
+				}
+			}`,
+			args:           "",
+			containerID:    "test-container",
+			expectedConfig: nil,
+			expectedError:  "failed to setup logging: failed to open log file",
+		},
 	}
 
 	for _, tc := range testCases {
