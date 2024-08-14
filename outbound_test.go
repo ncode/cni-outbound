@@ -1165,6 +1165,38 @@ func TestCmdCheckIPTablesManagerFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to create IPTablesManager")
 }
 
+func TestCmdCheckParseConfigError(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT",
+		"invalidField": true,
+	}`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	mockManager := new(MockIPTablesManager)
+
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return mockManager, nil
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdCheck(args)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to parse network configuration")
+}
+
 func TestSetupLogging(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "cni-outbound-test")
 	if err != nil {
