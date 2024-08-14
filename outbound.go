@@ -356,15 +356,6 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("failed to parse prevResult: %v", err)
 	}
 
-	if len(result.IPs) == 0 {
-		logger.Log(context.Background(), slog.LevelError,
-			"No IPs found in the result",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", args.ContainerID),
-		)
-		return fmt.Errorf("got no container IPs")
-	}
-
 	containerIP := result.IPs[0].Address.IP.String()
 	logger.Log(context.Background(), slog.LevelInfo,
 		"Container IP obtained",
