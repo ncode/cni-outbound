@@ -264,7 +264,7 @@ func TestParseConfigPrevResultConversionError(t *testing.T) {
 
 	_, err := parseConfig([]byte(input), "", "test-container")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to convert prevResult to current.Result")
+	assert.Contains(t, err.Error(), "invalid IP address: A.A.A.A")
 }
 
 func TestParseConfigMissingInterfaces(t *testing.T) {
