@@ -161,6 +161,80 @@ func TestParseConfig(t *testing.T) {
 			expectedConfig: nil,
 			expectedError:  "invalid prevResult structure: missing ips",
 		},
+		{
+			name: "Valid configuration with additional rules",
+			input: `{
+				"cniVersion": "0.4.0",
+				"name": "test-net",
+				"type": "outbound",
+				"mainChainName": "TEST-OUTBOUND",
+				"defaultAction": "ACCEPT",
+				"outboundRules": [
+					{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+				]
+			}`,
+			args:        `outbound.additional_rules=[{"host":"1.1.1.1","proto":"tcp","port":"80","action":"ACCEPT"}]`,
+			containerID: "test-container",
+			expectedConfig: &PluginConf{
+				NetConf: types.NetConf{
+					CNIVersion: "0.4.0",
+					Name:       "test-net",
+					Type:       "outbound",
+				},
+				MainChainName: "TEST-OUTBOUND",
+				DefaultAction: "ACCEPT",
+				OutboundRules: []iptables.OutboundRule{
+					{Host: "8.8.8.8", Proto: "udp", Port: "53", Action: "ACCEPT"},
+					{Host: "1.1.1.1", Proto: "tcp", Port: "80", Action: "ACCEPT"},
+				},
+			},
+			expectedError: "",
+		},
+		{
+			name: "Invalid additional rules",
+			input: `{
+				"cniVersion": "0.4.0",
+				"name": "test-net",
+				"type": "outbound",
+				"mainChainName": "TEST-OUTBOUND",
+				"defaultAction": "ACCEPT",
+				"outboundRules": [
+					{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+				]
+			}`,
+			args:           `outbound.additional_rules=[{"host":"1.1.1.1","proto":"tcp","port":"80","action":"ACCEPT",}]`, // Note the trailing comma
+			containerID:    "test-container",
+			expectedConfig: nil,
+			expectedError:  "failed to parse additional rules from CNI args",
+		},
+		{
+			name: "Empty additional rules",
+			input: `{
+				"cniVersion": "0.4.0",
+				"name": "test-net",
+				"type": "outbound",
+				"mainChainName": "TEST-OUTBOUND",
+				"defaultAction": "ACCEPT",
+				"outboundRules": [
+					{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+				]
+			}`,
+			args:        `outbound.additional_rules=[]`,
+			containerID: "test-container",
+			expectedConfig: &PluginConf{
+				NetConf: types.NetConf{
+					CNIVersion: "0.4.0",
+					Name:       "test-net",
+					Type:       "outbound",
+				},
+				MainChainName: "TEST-OUTBOUND",
+				DefaultAction: "ACCEPT",
+				OutboundRules: []iptables.OutboundRule{
+					{Host: "8.8.8.8", Proto: "udp", Port: "53", Action: "ACCEPT"},
+				},
+			},
+			expectedError: "",
+		},
 	}
 
 	for _, tc := range testCases {
