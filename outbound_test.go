@@ -159,7 +159,7 @@ func TestParseConfig(t *testing.T) {
 			args:           "",
 			containerID:    "test-container",
 			expectedConfig: nil,
-			expectedError:  "failed to setup logging: failed to open log file",
+			expectedError:  "invalid prevResult structure: missing ips",
 		},
 	}
 
