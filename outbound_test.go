@@ -669,15 +669,15 @@ func TestCmdAddRuleFailure(t *testing.T) {
 
 func TestCmdAddNoPrevResult(t *testing.T) {
 	input := `{
-		"cniVersion": "0.4.0",
-		"name": "test-net",
-		"type": "outbound",
-		"mainChainName": "TEST-OUTBOUND",
-		"defaultAction": "ACCEPT",
-		"outboundRules": [
-			{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
-		]
-	}`
+            "cniVersion": "0.4.0",
+            "name": "test-net",
+            "type": "outbound",
+            "mainChainName": "TEST-OUTBOUND",
+            "defaultAction": "ACCEPT",
+            "outboundRules": [
+                {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+            ]
+        }`
 
 	args := &skel.CmdArgs{
 		ContainerID: "test-container",
@@ -693,6 +693,7 @@ func TestCmdAddNoPrevResult(t *testing.T) {
 	mockManager.On("CreateContainerChain", mock.Anything).Return(nil)
 	mockManager.On("AddRule", mock.Anything, mock.Anything).Return(nil)
 
+	// Override newIPTablesManager
 	origNewIPTablesManager := newIPTablesManager
 	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
 		return mockManager, nil
@@ -703,6 +704,8 @@ func TestCmdAddNoPrevResult(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no prevResult found")
 
+	// The mock expectations for CreateContainerChain and AddRule should not be met
+	// because the function should return early due to missing prevResult
 	mockManager.AssertExpectations(t)
 }
 
