@@ -256,9 +256,9 @@ func TestParseConfigPrevResultConversionError(t *testing.T) {
 					"version": "4",
 					"interface": 0,
 					"address": "10.0.0.2/24",
-					"gateway": "10.0.0.1"
+					"gateway": "A.A.A.A"
 				}
-			],
+			]
 		}
 	}`
 
