@@ -329,17 +329,52 @@ func TestParseConfigCustomMainChainNameAndDefaultAction(t *testing.T) {
 	assert.Equal(t, "ACCEPT", conf.DefaultAction)
 }
 
-//func TestParseConfigVersionParseError(t *testing.T) {
-//	input := `{
-//		"cniVersion": "invalid",
-//		"name": "test-net",
-//		"type": "outbound"
-//	}`
-//
-//	_, err := parseConfig([]byte(input), "", "test-container")
-//	assert.Error(t, err)
-//	assert.Contains(t, err.Error(), "failed to parse config version")
-//}
+func TestCmdAddIPTablesManagerFailure(t *testing.T) {
+	input := `{
+        "cniVersion": "0.4.0",
+        "name": "test-net",
+        "type": "outbound",
+        "mainChainName": "TEST-OUTBOUND",
+        "defaultAction": "ACCEPT",
+        "outboundRules": [
+            {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+        ],
+        "prevResult": {
+            "interfaces": [
+                {
+                    "name": "eth0",
+                    "mac": "00:11:22:33:44:55"
+                }
+            ],
+            "ips": [
+                {
+                    "address": "10.0.0.2/24",
+                    "gateway": "10.0.0.1"
+                }
+            ]
+        }
+    }`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	// Override newIPTablesManager to return an error
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return nil, fmt.Errorf("failed to create IPTablesManager")
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdAdd(args)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to create IPTablesManager")
+}
 
 func TestCmdAdd(t *testing.T) {
 	input := `{
