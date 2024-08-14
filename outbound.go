@@ -123,14 +123,27 @@ func parseAdditionalRules(args, containerID string) ([]iptables.OutboundRule, er
 	)
 	return additionalRules, nil
 }
+
 func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 	conf := PluginConf{}
 
 	if err := json.Unmarshal(stdin, &conf); err != nil {
+		logger.Log(context.Background(), slog.LevelError,
+			"Failed to parse network configuration",
+			slog.String("component", "CNI-Outbound"),
+			slog.String("containerID", containerID),
+			slog.Any("error", err),
+		)
 		return nil, fmt.Errorf("failed to parse network configuration: %v", err)
 	}
 
 	if err := setupLogging(&conf); err != nil {
+		logger.Log(context.Background(), slog.LevelError,
+			"Failed to setup logging",
+			slog.String("component", "CNI-Outbound"),
+			slog.String("containerID", containerID),
+			slog.Any("error", err),
+		)
 		return nil, fmt.Errorf("failed to setup logging: %v", err)
 	}
 
@@ -140,14 +153,40 @@ func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 		slog.String("containerID", containerID),
 	)
 
-	if err := version.ParsePrevResult(&conf.NetConf); err != nil {
-		logger.Log(context.Background(), slog.LevelError,
-			"Could not parse prevResult",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", containerID),
-			slog.Any("error", err),
-		)
-		return nil, fmt.Errorf("could not parse prevResult: %v", err)
+	// Parse prevResult if it exists
+	if conf.RawPrevResult != nil {
+		if err := version.ParsePrevResult(&conf.NetConf); err != nil {
+			logger.Log(context.Background(), slog.LevelError,
+				"Could not parse prevResult",
+				slog.String("component", "CNI-Outbound"),
+				slog.String("containerID", containerID),
+				slog.Any("error", err),
+			)
+			return nil, fmt.Errorf("could not parse prevResult: %v", err)
+		}
+
+		// Convert prevResult to current.Result
+		result, err := current.NewResultFromResult(conf.PrevResult)
+		if err != nil {
+			logger.Log(context.Background(), slog.LevelError,
+				"Failed to convert prevResult to current.Result",
+				slog.String("component", "CNI-Outbound"),
+				slog.String("containerID", containerID),
+				slog.Any("error", err),
+			)
+			return nil, fmt.Errorf("failed to convert prevResult to current.Result: %v", err)
+		}
+
+		// Check for required fields
+		if len(result.Interfaces) == 0 {
+			return nil, fmt.Errorf("invalid prevResult structure: missing interfaces")
+		}
+
+		if len(result.IPs) == 0 {
+			return nil, fmt.Errorf("invalid prevResult structure: missing ips")
+		}
+
+		conf.PrevResult = result
 	}
 
 	if conf.MainChainName == "" {
@@ -197,6 +236,7 @@ func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 		slog.String("containerID", containerID),
 		slog.Int("totalRules", len(conf.OutboundRules)),
 	)
+
 	return &conf, nil
 }
 
@@ -299,15 +339,21 @@ func cmdAdd(args *skel.CmdArgs) error {
 		slog.String("containerID", args.ContainerID),
 	)
 
-	result, err := current.GetResult(conf.PrevResult)
+	var result *current.Result
+	if conf.PrevResult == nil {
+		// If there's no previous result, return an error
+		return fmt.Errorf("no prevResult found")
+	}
+
+	result, err = current.NewResultFromResult(conf.PrevResult)
 	if err != nil {
 		logger.Log(context.Background(), slog.LevelError,
-			"Failed to get result from prevResult",
+			"Failed to parse prevResult",
 			slog.String("component", "CNI-Outbound"),
 			slog.String("containerID", args.ContainerID),
 			slog.Any("error", err),
 		)
-		return fmt.Errorf("failed to convert prevResult: %v", err)
+		return fmt.Errorf("failed to parse prevResult: %v", err)
 	}
 
 	if len(result.IPs) == 0 {
@@ -326,6 +372,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 		slog.String("containerID", args.ContainerID),
 		slog.String("ip", containerIP),
 	)
+
 	if err := iptManager.AddJumpRule(containerIP, containerChain); err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to add jump rule to main chain",

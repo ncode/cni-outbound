@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -135,29 +136,38 @@ func TestParseConfig(t *testing.T) {
 
 func TestCmdAdd(t *testing.T) {
 	input := `{
-		"cniVersion": "0.4.0",
-		"name": "test-net",
-		"type": "outbound",
-		"mainChainName": "TEST-OUTBOUND",
-		"defaultAction": "ACCEPT",
-		"outboundRules": [
-			{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
-		],
-		"prevResult": {
-			"interfaces": [
-				{
-					"name": "eth0",
-					"mac": "00:11:22:33:44:55"
-				}
-			],
-			"ips": [
-				{
-					"address": "10.0.0.2/24",
-					"gateway": "10.0.0.1"
-				}
-			]
-		}
-	}`
+        "cniVersion": "0.4.0",
+        "name": "test-net",
+        "type": "outbound",
+        "mainChainName": "TEST-OUTBOUND",
+        "defaultAction": "ACCEPT",
+        "outboundRules": [
+            {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+        ],
+        "prevResult": {
+            "cniVersion": "0.4.0",
+            "interfaces": [
+                {
+                    "name": "eth0",
+                    "mac": "00:11:22:33:44:55"
+                }
+            ],
+            "ips": [
+                {
+                    "version": "4",
+                    "interface": 0,
+                    "address": "10.0.0.2/24",
+                    "gateway": "10.0.0.1"
+                }
+            ],
+            "routes": [
+                {
+                    "dst": "0.0.0.0/0",
+                    "gw": "10.0.0.1"
+                }
+            ]
+        }
+    }`
 
 	args := &skel.CmdArgs{
 		ContainerID: "test-container",
@@ -172,7 +182,7 @@ func TestCmdAdd(t *testing.T) {
 	mockManager.On("EnsureMainChainExists").Return(nil)
 	mockManager.On("CreateContainerChain", mock.Anything).Return(nil)
 	mockManager.On("AddRule", mock.Anything, mock.Anything).Return(nil)
-	mockManager.On("AddJumpRule", mock.Anything, mock.Anything).Return(nil)
+	mockManager.On("AddJumpRule", "10.0.0.2", mock.Anything).Return(nil)
 
 	// Override newIPTablesManager
 	origNewIPTablesManager := newIPTablesManager
@@ -184,6 +194,51 @@ func TestCmdAdd(t *testing.T) {
 	err := cmdAdd(args)
 	assert.NoError(t, err)
 	mockManager.AssertExpectations(t)
+}
+
+func TestCmdAddNoIPs(t *testing.T) {
+	input := `{
+        "cniVersion": "0.4.0",
+        "name": "test-net",
+        "type": "outbound",
+        "mainChainName": "TEST-OUTBOUND",
+        "defaultAction": "ACCEPT",
+        "outboundRules": [
+            {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+        ],
+        "prevResult": {
+            "cniVersion": "0.4.0",
+            "interfaces": [
+                {
+                    "name": "eth0",
+                    "mac": "00:11:22:33:44:55"
+                }
+            ],
+            "ips": []
+        }
+    }`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	mockManager := new(MockIPTablesManager)
+
+	// Override newIPTablesManager
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return mockManager, nil
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdAdd(args)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid prevResult structure: missing ips")
 }
 
 func TestCmdDel(t *testing.T) {
@@ -424,6 +479,285 @@ func TestSetupLogging(t *testing.T) {
 					}
 				} else {
 					assert.NotNil(t, logger)
+				}
+			}
+		})
+	}
+}
+
+func TestParseConfigInvalidJSON(t *testing.T) {
+	invalidJSON := `{
+        "cniVersion": "0.4.0",
+        "name": "test-net",
+        "type": "outbound",
+        "mainChainName": "TEST-OUTBOUND",
+        "defaultAction": "ACCEPT",
+        "outboundRules": [
+            {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+        ],
+    }` // Note the trailing comma, which makes this invalid JSON
+
+	_, err := parseConfig([]byte(invalidJSON), "", "test-container")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to parse network configuration")
+}
+
+func TestParseConfigMissingFields(t *testing.T) {
+	missingFieldsJSON := `{
+        "cniVersion": "0.4.0",
+        "type": "outbound"
+    }`
+
+	conf, err := parseConfig([]byte(missingFieldsJSON), "", "test-container")
+
+	// The function doesn't immediately fail on missing fields
+	assert.NoError(t, err)
+
+	// Instead, check that the required fields are empty or have default values
+	assert.Empty(t, conf.Name)
+	assert.Equal(t, "CNI-OUTBOUND", conf.MainChainName)
+	assert.Equal(t, "DROP", conf.DefaultAction)
+	assert.Empty(t, conf.OutboundRules)
+
+	// The PrevResult should be nil because it's not provided in the input
+	assert.Nil(t, conf.PrevResult)
+}
+
+func TestParseAdditionalRulesInvalidJSON(t *testing.T) {
+	invalidArgs := "outbound.additional_rules=[{\"host\":\"1.1.1.1\",\"proto\":\"tcp\",\"port\":\"80\",\"action\":\"ACCEPT\",}]" // Note the trailing comma
+
+	_, err := parseAdditionalRules(invalidArgs, "test-container")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to parse additional rules from CNI args")
+}
+
+func TestCmdAddIPTablesManagerFailure(t *testing.T) {
+	input := `{
+        "cniVersion": "0.4.0",
+        "name": "test-net",
+        "type": "outbound",
+        "mainChainName": "TEST-OUTBOUND",
+        "defaultAction": "ACCEPT",
+        "outboundRules": [
+            {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+        ],
+        "prevResult": {
+            "interfaces": [
+                {
+                    "name": "eth0",
+                    "mac": "00:11:22:33:44:55"
+                }
+            ],
+            "ips": [
+                {
+                    "address": "10.0.0.2/24",
+                    "gateway": "10.0.0.1"
+                }
+            ]
+        }
+    }`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	// Override newIPTablesManager to return an error
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return nil, fmt.Errorf("failed to create IPTablesManager")
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdAdd(args)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to create IPTablesManager")
+}
+
+func TestCmdDelNoPrevResult(t *testing.T) {
+	input := `{
+        "cniVersion": "0.4.0",
+        "name": "test-net",
+        "type": "outbound",
+        "mainChainName": "TEST-OUTBOUND",
+        "defaultAction": "ACCEPT",
+        "outboundRules": [
+            {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+        ]
+    }`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	mockManager := new(MockIPTablesManager)
+	mockManager.On("RemoveJumpRuleByTargetChain", mock.Anything).Return(nil)
+	mockManager.On("ClearAndDeleteChain", mock.Anything).Return(nil)
+
+	// Override newIPTablesManager
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return mockManager, nil
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdDel(args)
+	assert.NoError(t, err)
+	mockManager.AssertExpectations(t)
+}
+
+func TestCmdCheckChainExistenceFailure(t *testing.T) {
+	input := `{
+        "cniVersion": "0.4.0",
+        "name": "test-net",
+        "type": "outbound",
+        "mainChainName": "TEST-OUTBOUND",
+        "defaultAction": "ACCEPT",
+        "outboundRules": [
+            {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+        ]
+    }`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	mockManager := new(MockIPTablesManager)
+	mockManager.On("ChainExists", mock.Anything).Return(false, nil)
+
+	// Override newIPTablesManager
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return mockManager, nil
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdCheck(args)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "does not exist")
+	mockManager.AssertExpectations(t)
+}
+
+func TestParseConfig_PrevResult(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name: "Valid prevResult",
+			input: `{
+                "cniVersion": "0.4.0",
+                "name": "test-net",
+                "type": "outbound",
+                "prevResult": {
+                    "cniVersion": "0.4.0",
+                    "interfaces": [{"name": "eth0", "mac": "00:11:22:33:44:55"}],
+                    "ips": [{"version": "4", "address": "10.0.0.2/24", "gateway": "10.0.0.1"}]
+                }
+            }`,
+			expectError: false,
+		},
+		{
+			name: "No prevResult",
+			input: `{
+                "cniVersion": "0.4.0",
+                "name": "test-net",
+                "type": "outbound"
+            }`,
+			expectError: false,
+		},
+		{
+			name: "prevResult with extra key",
+			input: `{
+                "cniVersion": "0.4.0",
+                "name": "test-net",
+                "type": "outbound",
+                "prevResult": {
+                    "cniVersion": "0.4.0",
+                    "interfaces": [{"name": "eth0", "mac": "00:11:22:33:44:55"}],
+                    "ips": [{"version": "4", "address": "10.0.0.2/24", "gateway": "10.0.0.1"}],
+                    "extraKey": "extraValue"
+                }
+            }`,
+			expectError: false,
+		},
+		{
+			name: "Incompatible CNI versions",
+			input: `{
+                "cniVersion": "0.4.0",
+                "name": "test-net",
+                "type": "outbound",
+                "prevResult": {
+                    "cniVersion": "0.1.0",
+                    "interfaces": [{"name": "eth0", "mac": "00:11:22:33:44:55"}],
+                    "ips": [{"version": "4", "address": "10.0.0.2/24", "gateway": "10.0.0.1"}]
+                }
+            }`,
+			expectError: true,
+			errorMsg:    "could not parse prevResult",
+		},
+		{
+			name: "Missing required interfaces in prevResult",
+			input: `{
+                "cniVersion": "0.4.0",
+                "name": "test-net",
+                "type": "outbound",
+                "prevResult": {
+                    "cniVersion": "0.4.0",
+                    "ips": [{"version": "4", "address": "10.0.0.2/24", "gateway": "10.0.0.1"}]
+                }
+            }`,
+			expectError: true,
+			errorMsg:    "invalid prevResult structure: missing interfaces",
+		},
+		{
+			name: "Missing required ips in prevResult",
+			input: `{
+                "cniVersion": "0.4.0",
+                "name": "test-net",
+                "type": "outbound",
+                "prevResult": {
+                    "cniVersion": "0.4.0",
+                    "interfaces": [{"name": "eth0", "mac": "00:11:22:33:44:55"}]
+                }
+            }`,
+			expectError: true,
+			errorMsg:    "invalid prevResult structure: missing ips",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conf, err := parseConfig([]byte(tt.input), "", "test-container")
+
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorMsg)
+				assert.Nil(t, conf)
+			} else {
+				assert.NoError(t, err)
+				assert.NotNil(t, conf)
+
+				if strings.Contains(tt.input, "prevResult") {
+					assert.NotNil(t, conf.PrevResult, "PrevResult should not be nil")
+				} else {
+					assert.Nil(t, conf.PrevResult, "PrevResult should be nil")
 				}
 			}
 		})
