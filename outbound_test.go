@@ -238,6 +238,110 @@ func TestParseConfigEmptyAdditionalRules(t *testing.T) {
 	assert.Equal(t, expectedConfig, conf)
 }
 
+func TestParseConfigPrevResultConversionError(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"prevResult": {
+			"cniVersion": "0.4.0",
+			"interfaces": [
+				{
+					"name": "eth0",
+					"mac": "00:11:22:33:44:55"
+				}
+			],
+			"ips": [
+				{
+					"version": "4",
+					"interface": 0,
+					"address": "10.0.0.2/24",
+					"gateway": "10.0.0.1"
+				}
+			],
+			"invalidField": "This will cause a conversion error"
+		}
+	}`
+
+	_, err := parseConfig([]byte(input), "", "test-container")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to convert prevResult to current.Result")
+}
+
+func TestParseConfigMissingInterfaces(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"prevResult": {
+			"cniVersion": "0.4.0",
+			"ips": [
+				{
+					"version": "4",
+					"interface": 0,
+					"address": "10.0.0.2/24",
+					"gateway": "10.0.0.1"
+				}
+			]
+		}
+	}`
+
+	_, err := parseConfig([]byte(input), "", "test-container")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid prevResult structure: missing interfaces")
+}
+
+func TestParseConfigDefaultMainChainName(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound"
+	}`
+
+	conf, err := parseConfig([]byte(input), "", "test-container")
+	assert.NoError(t, err)
+	assert.Equal(t, "CNI-OUTBOUND", conf.MainChainName)
+}
+
+func TestParseConfigDefaultAction(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound"
+	}`
+
+	conf, err := parseConfig([]byte(input), "", "test-container")
+	assert.NoError(t, err)
+	assert.Equal(t, "DROP", conf.DefaultAction)
+}
+
+func TestParseConfigCustomMainChainNameAndDefaultAction(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "CUSTOM-CHAIN",
+		"defaultAction": "ACCEPT"
+	}`
+
+	conf, err := parseConfig([]byte(input), "", "test-container")
+	assert.NoError(t, err)
+	assert.Equal(t, "CUSTOM-CHAIN", conf.MainChainName)
+	assert.Equal(t, "ACCEPT", conf.DefaultAction)
+}
+
+func TestParseConfigVersionParseError(t *testing.T) {
+	input := `{
+		"cniVersion": "invalid",
+		"name": "test-net",
+		"type": "outbound"
+	}`
+
+	_, err := parseConfig([]byte(input), "", "test-container")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to parse config version")
+}
+
 func TestCmdAdd(t *testing.T) {
 	input := `{
 		"cniVersion": "0.4.0",
