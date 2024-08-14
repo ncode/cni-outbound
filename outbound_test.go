@@ -142,7 +142,6 @@ func TestParseConfig(t *testing.T) {
 				"type": "outbound",
 				"mainChainName": "TEST-OUTBOUND",
 				"defaultAction": "ACCEPT",
-				"logging": { "enable": true, "directory": "" },
 				"outboundRules": [
 					{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
 				],
