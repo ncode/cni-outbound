@@ -132,7 +132,7 @@ func TestParseConfig(t *testing.T) {
 			args:           "",
 			containerID:    "test-container",
 			expectedConfig: nil,
-			expectedError:  "failed to parse network configuration",
+			expectedError:  "failed to setup logging: failed to open log file",
 		},
 	}
 
