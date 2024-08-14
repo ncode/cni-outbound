@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/containernetworking/cni/pkg/types"
 	"os"
 	"testing"
 
@@ -61,22 +62,75 @@ func (m *MockIPTablesManager) VerifyRules(chainName string, rules []iptables.Out
 }
 
 func TestParseConfig(t *testing.T) {
-	input := `{
-		"cniVersion": "0.4.0",
-		"name": "test-net",
-		"type": "outbound",
-		"mainChainName": "TEST-OUTBOUND",
-		"defaultAction": "ACCEPT",
-		"outboundRules": [
-			{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
-		]
-	}`
+	testCases := []struct {
+		name           string
+		input          string
+		args           string
+		containerID    string
+		expectedConfig *PluginConf
+		expectedError  string
+	}{
+		{
+			name: "Valid configuration",
+			input: `{
+				"cniVersion": "0.4.0",
+				"name": "test-net",
+				"type": "outbound",
+				"mainChainName": "TEST-OUTBOUND",
+				"defaultAction": "ACCEPT",
+				"outboundRules": [
+					{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+				]
+			}`,
+			args:        "",
+			containerID: "test-container",
+			expectedConfig: &PluginConf{
+				NetConf: types.NetConf{
+					CNIVersion: "0.4.0",
+					Name:       "test-net",
+					Type:       "outbound",
+				},
+				MainChainName: "TEST-OUTBOUND",
+				DefaultAction: "ACCEPT",
+				OutboundRules: []iptables.OutboundRule{
+					{Host: "8.8.8.8", Proto: "udp", Port: "53", Action: "ACCEPT"},
+				},
+			},
+			expectedError: "",
+		},
+		{
+			name: "Invalid JSON",
+			input: `{
+				"cniVersion": "0.4.0",
+				"name": "test-net",
+				"type": "outbound",
+				"mainChainName": "TEST-OUTBOUND",
+				"defaultAction": "ACCEPT",
+				"outboundRules": [
+					{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+				],
+			}`, // Note the trailing comma, which makes this invalid JSON
+			args:           "",
+			containerID:    "test-container",
+			expectedConfig: nil,
+			expectedError:  "failed to parse network configuration",
+		},
+	}
 
-	conf, err := parseConfig([]byte(input), "", "test-container")
-	assert.NoError(t, err)
-	assert.Equal(t, "TEST-OUTBOUND", conf.MainChainName)
-	assert.Equal(t, "ACCEPT", conf.DefaultAction)
-	assert.Len(t, conf.OutboundRules, 1)
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			conf, err := parseConfig([]byte(tc.input), tc.args, tc.containerID)
+
+			if tc.expectedError != "" {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tc.expectedError)
+				assert.Nil(t, conf)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tc.expectedConfig, conf)
+			}
+		})
+	}
 }
 
 func TestCmdAdd(t *testing.T) {
