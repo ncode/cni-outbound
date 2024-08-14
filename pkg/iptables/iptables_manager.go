@@ -18,6 +18,18 @@ type OutboundRule struct {
 	Action string
 }
 
+type Manager interface {
+	EnsureMainChainExists() error
+	CreateContainerChain(containerChain string) error
+	AddRule(chainName string, rule OutboundRule) error
+	AddJumpRule(sourceIP, targetChain string) error
+	RemoveJumpRule(sourceIP, targetChain string) error
+	ClearAndDeleteChain(chainName string) error
+	ChainExists(chainName string) (bool, error)
+	VerifyRules(chainName string, rules []OutboundRule) error
+	RemoveJumpRuleByTargetChain(targetChain string) error
+}
+
 type IPTablesWrapper interface {
 	NewChain(table, chain string) error
 	ClearChain(table, chain string) error
@@ -35,7 +47,7 @@ type IPTablesManager struct {
 	defaultAction string
 }
 
-func NewIPTablesManager(mainChainName, defaultAction string) (*IPTablesManager, error) {
+func NewIPTablesManager(mainChainName, defaultAction string) (Manager, error) {
 	ipt, err := newIPTables()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize iptables: %v", err)
