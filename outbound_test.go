@@ -809,6 +809,74 @@ func TestCmdAddIPTablesManagerFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to create IPTablesManager")
 }
 
+func TestCmdAddAddRuleFailure(t *testing.T) {
+	input := `{
+            "cniVersion": "0.4.0",
+            "name": "test-net",
+            "type": "outbound",
+            "mainChainName": "TEST-OUTBOUND",
+            "defaultAction": "ACCEPT",
+            "outboundRules": [
+                {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"},
+                {"host": "1.1.1.1", "proto": "tcp", "port": "80", "action": "ACCEPT"}
+            ],
+            "prevResult": {
+                "cniVersion": "0.4.0",
+                "interfaces": [
+                    {
+                        "name": "eth0",
+                        "mac": "00:11:22:33:44:55"
+                    }
+                ],
+                "ips": [
+                    {
+                        "version": "4",
+                        "interface": 0,
+                        "address": "10.0.0.2/24",
+                        "gateway": "10.0.0.1"
+                    }
+                ],
+                "routes": [
+                    {
+                        "dst": "0.0.0.0/0",
+                        "gw": "10.0.0.1"
+                    }
+                ]
+            }
+        }`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	mockManager := new(MockIPTablesManager)
+	mockManager.On("EnsureMainChainExists").Return(nil)
+	mockManager.On("CreateContainerChain", mock.Anything).Return(nil)
+	mockManager.On("AddRule", mock.Anything, mock.MatchedBy(func(rule iptables.OutboundRule) bool {
+		return rule.Host == "8.8.8.8"
+	})).Return(nil)
+	mockManager.On("AddRule", mock.Anything, mock.MatchedBy(func(rule iptables.OutboundRule) bool {
+		return rule.Host == "1.1.1.1"
+	})).Return(fmt.Errorf("failed to add rule"))
+
+	// Override newIPTablesManager
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return mockManager, nil
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdAdd(args)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to add rule to container chain: failed to add rule")
+	mockManager.AssertExpectations(t)
+}
+
 func TestCmdDelNoPrevResult(t *testing.T) {
 	input := `{
         "cniVersion": "0.4.0",
