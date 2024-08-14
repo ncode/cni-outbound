@@ -116,6 +116,24 @@ func TestParseConfig(t *testing.T) {
 			expectedConfig: nil,
 			expectedError:  "failed to parse network configuration",
 		},
+		{
+			name: "Error on logging as non-root",
+			input: `{
+				"cniVersion": "0.4.0",
+				"name": "test-net",
+				"type": "outbound",
+				"mainChainName": "TEST-OUTBOUND",
+				"defaultAction": "ACCEPT",
+				"logging": { "enable": true, "directory": "" },
+				"outboundRules": [
+					{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+				]
+			}`,
+			args:           "",
+			containerID:    "test-container",
+			expectedConfig: nil,
+			expectedError:  "failed to parse network configuration",
+		},
 	}
 
 	for _, tc := range testCases {
