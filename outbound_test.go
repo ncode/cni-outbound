@@ -1046,6 +1046,88 @@ func TestCmdCheckChainExistsFailureForMainChain(t *testing.T) {
 	mockManager.AssertExpectations(t)
 }
 
+func TestCmdCheckChainExistsFailure(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT",
+		"outboundRules": [
+			{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+		]
+	}`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	mockManager := new(MockIPTablesManager)
+	mockManager.On("ChainExists", "TEST-OUTBOUND").Return(false, fmt.Errorf("mock chain exists error"))
+
+	// Override newIPTablesManager
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return mockManager, nil
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdCheck(args)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to check if main chain exists: mock chain exists error")
+	mockManager.AssertExpectations(t)
+}
+
+func TestCmdCheckContainerChainExistsFailure(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT",
+		"outboundRules": [
+			{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+		]
+	}`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	mockManager := new(MockIPTablesManager)
+	mockManager.On("ChainExists", "TEST-OUTBOUND").Return(true, nil)
+
+	// Mock the container chain check to fail
+	mockManager.On("ChainExists", mock.MatchedBy(func(chainName string) bool {
+		return chainName != "TEST-OUTBOUND"
+	})).Return(false, fmt.Errorf("mock container chain exists error"))
+
+	// Override newIPTablesManager
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return mockManager, nil
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdCheck(args)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to check if container chain exists: mock container chain exists error")
+
+	mockManager.AssertExpectations(t)
+}
+
 func TestCmdCheckChainExistsFailureForContainerChain(t *testing.T) {
 	input := `{
 		"cniVersion": "0.4.0",
