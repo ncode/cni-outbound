@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"github.com/containernetworking/cni/pkg/types"
 	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/ncode/cni-outbound/pkg/iptables"
@@ -346,6 +348,13 @@ func TestGenerateChainName(t *testing.T) {
 }
 
 func TestSetupLogging(t *testing.T) {
+	// Create a temporary directory for testing
+	tempDir, err := os.MkdirTemp("", "cni-outbound-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(tempDir) // Clean up after the test
+
 	testCases := []struct {
 		name          string
 		config        LogConfig
@@ -364,9 +373,9 @@ func TestSetupLogging(t *testing.T) {
 			name: "Logging enabled with custom directory",
 			config: LogConfig{
 				Enable:    true,
-				Directory: "/custom/log/dir",
+				Directory: filepath.Join(tempDir, "custom"),
 			},
-			expectedDir:   "/custom/log/dir",
+			expectedDir:   filepath.Join(tempDir, "custom"),
 			expectedError: false,
 		},
 		{
@@ -386,6 +395,13 @@ func TestSetupLogging(t *testing.T) {
 				Logging: tc.config,
 			}
 
+			if tc.config.Enable && tc.config.Directory != "" {
+				err := os.MkdirAll(tc.config.Directory, 0755)
+				if err != nil {
+					t.Fatalf("Failed to create directory: %v", err)
+				}
+			}
+
 			err := setupLogging(conf)
 
 			if tc.expectedError {
@@ -395,9 +411,13 @@ func TestSetupLogging(t *testing.T) {
 				assert.Equal(t, tc.expectedDir, conf.Logging.Directory)
 				assert.NotNil(t, logger)
 
-				// Clean up any created log files
-				if conf.Logging.Enable {
-					os.RemoveAll(conf.Logging.Directory)
+				// Check if log file was created (only for enabled logging)
+				if conf.Logging.Enable && conf.Logging.Directory != "" {
+					currentDate := time.Now().Format("2006-01-02")
+					logFileName := fmt.Sprintf("outbound-%s.log", currentDate)
+					logFilePath := filepath.Join(conf.Logging.Directory, logFileName)
+					_, err := os.Stat(logFilePath)
+					assert.NoError(t, err, "Log file should exist")
 				}
 			}
 		})
