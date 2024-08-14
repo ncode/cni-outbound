@@ -1269,7 +1269,7 @@ func TestCmdDelParseConfigError(t *testing.T) {
             "type": "outbound",
             "mainChainName": "TEST-OUTBOUND",
             "defaultAction": "ACCEPT",
-            "invalidField": true
+            "invalidField": true,
         }`
 
 	args := &skel.CmdArgs{
@@ -1280,6 +1280,13 @@ func TestCmdDelParseConfigError(t *testing.T) {
 		Path:        "/opt/cni/bin",
 		StdinData:   []byte(input),
 	}
+
+	// Override newIPTablesManager
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return mockManager, nil
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
 
 	err := cmdDel(args)
 	assert.Error(t, err)
