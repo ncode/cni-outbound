@@ -809,7 +809,7 @@ func TestCmdAddIPTablesManagerFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to create IPTablesManager")
 }
 
-func TestCmdAddAddRuleFailure(t *testing.T) {
+func TestCmdAddRuleFailure(t *testing.T) {
 	input := `{
             "cniVersion": "0.4.0",
             "name": "test-net",
@@ -877,7 +877,7 @@ func TestCmdAddAddRuleFailure(t *testing.T) {
 	mockManager.AssertExpectations(t)
 }
 
-func TestCmdAddAddNoPrevResult(t *testing.T) {
+func TestCmdAddNoPrevResult(t *testing.T) {
 	input := `{
             "cniVersion": "0.4.0",
             "name": "test-net",
@@ -916,6 +916,64 @@ func TestCmdAddAddNoPrevResult(t *testing.T) {
 
 	// The mock expectations for CreateContainerChain and AddRule should not be met
 	// because the function should return early due to missing prevResult
+	mockManager.AssertExpectations(t)
+}
+
+func TestCmdAddJumpRuleFailure(t *testing.T) {
+	input := `{
+            "cniVersion": "0.4.0",
+            "name": "test-net",
+            "type": "outbound",
+            "mainChainName": "TEST-OUTBOUND",
+            "defaultAction": "ACCEPT",
+            "outboundRules": [
+                {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+            ],
+            "prevResult": {
+                "cniVersion": "0.4.0",
+                "interfaces": [
+                    {
+                        "name": "eth0",
+                        "mac": "00:11:22:33:44:55"
+                    }
+                ],
+                "ips": [
+                    {
+                        "version": "4",
+                        "interface": 0,
+                        "address": "10.0.0.2/24",
+                        "gateway": "10.0.0.1"
+                    }
+                ]
+            }
+        }`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	mockManager := new(MockIPTablesManager)
+	mockManager.On("EnsureMainChainExists").Return(nil)
+	mockManager.On("CreateContainerChain", mock.Anything).Return(nil)
+	mockManager.On("AddRule", mock.Anything, mock.Anything).Return(nil)
+	mockManager.On("AddJumpRule", "10.0.0.2", mock.Anything).Return(fmt.Errorf("failed to add jump rule"))
+
+	// Override newIPTablesManager
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return mockManager, nil
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdAdd(args)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to add jump rule to main chain: failed to add jump rule")
+
 	mockManager.AssertExpectations(t)
 }
 
