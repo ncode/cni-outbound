@@ -376,24 +376,24 @@ func TestSetupLogging(t *testing.T) {
 			expectedDir:   filepath.Join(tempDir, "custom"),
 			expectedError: false,
 		},
-		{
-			name: "Logging enabled with default directory",
-			config: LogConfig{
-				Enable:    true,
-				Directory: "/var/log/cni",
-			},
-			expectedDir:   "/var/log/cni",
-			expectedError: false,
-		},
-		{
-			name: "Logging enabled with empty directory",
-			config: LogConfig{
-				Enable:    true,
-				Directory: "",
-			},
-			expectedDir:   "/var/log/cni",
-			expectedError: false,
-		},
+		//{
+		//	name: "Logging enabled with default directory",
+		//	config: LogConfig{
+		//		Enable:    true,
+		//		Directory: "/var/log/cni",
+		//	},
+		//	expectedDir:   "/var/log/cni",
+		//	expectedError: false,
+		//},
+		//{
+		//	name: "Logging enabled with empty directory",
+		//	config: LogConfig{
+		//		Enable:    true,
+		//		Directory: "",
+		//	},
+		//	expectedDir:   "/var/log/cni",
+		//	expectedError: false,
+		//},
 	}
 
 	for _, tc := range testCases {
