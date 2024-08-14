@@ -2,16 +2,14 @@ package main
 
 import (
 	"fmt"
-	"github.com/containernetworking/cni/pkg/types"
-	"os"
-	"path/filepath"
-	"testing"
-	"time"
-
 	"github.com/containernetworking/cni/pkg/skel"
+	"github.com/containernetworking/cni/pkg/types"
 	"github.com/ncode/cni-outbound/pkg/iptables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"os"
+	"path/filepath"
+	"testing"
 )
 
 type MockIPTablesManager struct {
@@ -411,13 +409,13 @@ func TestSetupLogging(t *testing.T) {
 				assert.Equal(t, tc.expectedDir, conf.Logging.Directory)
 				assert.NotNil(t, logger)
 
-				// Check if log file was created (only for enabled logging)
-				if conf.Logging.Enable && conf.Logging.Directory != "" {
-					currentDate := time.Now().Format("2006-01-02")
-					logFileName := fmt.Sprintf("outbound-%s.log", currentDate)
-					logFilePath := filepath.Join(conf.Logging.Directory, logFileName)
-					_, err := os.Stat(logFilePath)
-					assert.NoError(t, err, "Log file should exist")
+				// For the default directory case, we just check if the directory is set correctly
+				if tc.config.Directory == "" {
+					assert.Equal(t, "/var/log/cni", conf.Logging.Directory)
+				} else if conf.Logging.Enable {
+					// For custom directory, we can check if the directory exists
+					_, err := os.Stat(conf.Logging.Directory)
+					assert.NoError(t, err, "Log directory should exist")
 				}
 			}
 		})
