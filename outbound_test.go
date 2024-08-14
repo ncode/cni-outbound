@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/mock"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -62,231 +61,217 @@ func (m *MockIPTablesManager) VerifyRules(chainName string, rules []iptables.Out
 	return args.Error(0)
 }
 
-func TestParseConfig(t *testing.T) {
-	testCases := []struct {
-		name           string
-		input          string
-		args           string
-		containerID    string
-		expectedConfig *PluginConf
-		expectedError  string
-	}{
-		{
-			name: "Valid configuration",
-			input: `{
-				"cniVersion": "0.4.0",
-				"name": "test-net",
-				"type": "outbound",
-				"mainChainName": "TEST-OUTBOUND",
-				"defaultAction": "ACCEPT",
-				"outboundRules": [
-					{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
-				]
-			}`,
-			args:        "",
-			containerID: "test-container",
-			expectedConfig: &PluginConf{
-				NetConf: types.NetConf{
-					CNIVersion: "0.4.0",
-					Name:       "test-net",
-					Type:       "outbound",
-				},
-				MainChainName: "TEST-OUTBOUND",
-				DefaultAction: "ACCEPT",
-				OutboundRules: []iptables.OutboundRule{
-					{Host: "8.8.8.8", Proto: "udp", Port: "53", Action: "ACCEPT"},
-				},
-			},
-			expectedError: "",
+func TestParseConfigValidConfiguration(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT",
+		"outboundRules": [
+			{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+		]
+	}`
+
+	expectedConfig := &PluginConf{
+		NetConf: types.NetConf{
+			CNIVersion: "0.4.0",
+			Name:       "test-net",
+			Type:       "outbound",
 		},
-		{
-			name: "Invalid JSON",
-			input: `{
-				"cniVersion": "0.4.0",
-				"name": "test-net",
-				"type": "outbound",
-				"mainChainName": "TEST-OUTBOUND",
-				"defaultAction": "ACCEPT",
-				"outboundRules": [
-					{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
-				],
-			}`, // Note the trailing comma, which makes this invalid JSON
-			args:           "",
-			containerID:    "test-container",
-			expectedConfig: nil,
-			expectedError:  "failed to parse network configuration",
+		MainChainName: "TEST-OUTBOUND",
+		DefaultAction: "ACCEPT",
+		OutboundRules: []iptables.OutboundRule{
+			{Host: "8.8.8.8", Proto: "udp", Port: "53", Action: "ACCEPT"},
 		},
-		{
-			name: "Error on logging as non-root",
-			input: `{
-				"cniVersion": "0.4.0",
-				"name": "test-net",
-				"type": "outbound",
-				"mainChainName": "TEST-OUTBOUND",
-				"defaultAction": "ACCEPT",
-				"logging": { "enable": true, "directory": "" },
-				"outboundRules": [
-					{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
-				]
-			}`,
-			args:           "",
-			containerID:    "test-container",
-			expectedConfig: nil,
-			expectedError:  "failed to setup logging: failed to open log file",
-		},
-		{
-			name: "Error missing required fields",
-			input: `{
-				"cniVersion": "0.4.0",
-				"name": "test-net",
-				"type": "outbound",
-				"mainChainName": "TEST-OUTBOUND",
-				"defaultAction": "ACCEPT",
-				"outboundRules": [
-					{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
-				],
-				"prevResult": {
-					"cniVersion": "0.4.0",
-					"interfaces": [
-						{
-							"name": "eth0",
-							"mac": "00:11:22:33:44:55"
-						}
-					],
-					"ips": []
+	}
+
+	conf, err := parseConfig([]byte(input), "", "test-container")
+	assert.NoError(t, err)
+	assert.Equal(t, expectedConfig, conf)
+}
+
+func TestParseConfigInvalidJSON(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT",
+		"outboundRules": [
+			{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+		],
+	}` // Note the trailing comma
+
+	conf, err := parseConfig([]byte(input), "", "test-container")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to parse network configuration")
+	assert.Nil(t, conf)
+}
+
+func TestParseConfigErrorOnLoggingAsNonRoot(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT",
+		"logging": { "enable": true, "directory": "" },
+		"outboundRules": [
+			{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+		]
+	}`
+
+	conf, err := parseConfig([]byte(input), "", "test-container")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to setup logging: failed to open log file")
+	assert.Nil(t, conf)
+}
+
+func TestParseConfigErrorMissingRequiredFields(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT",
+		"outboundRules": [
+			{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+		],
+		"prevResult": {
+			"cniVersion": "0.4.0",
+			"interfaces": [
+				{
+					"name": "eth0",
+					"mac": "00:11:22:33:44:55"
 				}
-			}`,
-			args:           "",
-			containerID:    "test-container",
-			expectedConfig: nil,
-			expectedError:  "invalid prevResult structure: missing ips",
+			],
+			"ips": []
+		}
+	}`
+
+	conf, err := parseConfig([]byte(input), "", "test-container")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid prevResult structure: missing ips")
+	assert.Nil(t, conf)
+}
+
+func TestParseConfigValidConfigurationWithAdditionalRules(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT",
+		"outboundRules": [
+			{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+		]
+	}`
+	args := `outbound.additional_rules=[{"host":"1.1.1.1","proto":"tcp","port":"80","action":"ACCEPT"}]`
+
+	expectedConfig := &PluginConf{
+		NetConf: types.NetConf{
+			CNIVersion: "0.4.0",
+			Name:       "test-net",
+			Type:       "outbound",
 		},
-		{
-			name: "Valid configuration with additional rules",
-			input: `{
-				"cniVersion": "0.4.0",
-				"name": "test-net",
-				"type": "outbound",
-				"mainChainName": "TEST-OUTBOUND",
-				"defaultAction": "ACCEPT",
-				"outboundRules": [
-					{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
-				]
-			}`,
-			args:        `outbound.additional_rules=[{"host":"1.1.1.1","proto":"tcp","port":"80","action":"ACCEPT"}]`,
-			containerID: "test-container",
-			expectedConfig: &PluginConf{
-				NetConf: types.NetConf{
-					CNIVersion: "0.4.0",
-					Name:       "test-net",
-					Type:       "outbound",
-				},
-				MainChainName: "TEST-OUTBOUND",
-				DefaultAction: "ACCEPT",
-				OutboundRules: []iptables.OutboundRule{
-					{Host: "8.8.8.8", Proto: "udp", Port: "53", Action: "ACCEPT"},
-					{Host: "1.1.1.1", Proto: "tcp", Port: "80", Action: "ACCEPT"},
-				},
-			},
-			expectedError: "",
-		},
-		{
-			name: "Invalid additional rules",
-			input: `{
-				"cniVersion": "0.4.0",
-				"name": "test-net",
-				"type": "outbound",
-				"mainChainName": "TEST-OUTBOUND",
-				"defaultAction": "ACCEPT",
-				"outboundRules": [
-					{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
-				]
-			}`,
-			args:           `outbound.additional_rules=[{"host":"1.1.1.1","proto":"tcp","port":"80","action":"ACCEPT",}]`, // Note the trailing comma
-			containerID:    "test-container",
-			expectedConfig: nil,
-			expectedError:  "failed to parse additional rules from CNI args",
-		},
-		{
-			name: "Empty additional rules",
-			input: `{
-				"cniVersion": "0.4.0",
-				"name": "test-net",
-				"type": "outbound",
-				"mainChainName": "TEST-OUTBOUND",
-				"defaultAction": "ACCEPT",
-				"outboundRules": [
-					{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
-				]
-			}`,
-			args:        `outbound.additional_rules=[]`,
-			containerID: "test-container",
-			expectedConfig: &PluginConf{
-				NetConf: types.NetConf{
-					CNIVersion: "0.4.0",
-					Name:       "test-net",
-					Type:       "outbound",
-				},
-				MainChainName: "TEST-OUTBOUND",
-				DefaultAction: "ACCEPT",
-				OutboundRules: []iptables.OutboundRule{
-					{Host: "8.8.8.8", Proto: "udp", Port: "53", Action: "ACCEPT"},
-				},
-			},
-			expectedError: "",
+		MainChainName: "TEST-OUTBOUND",
+		DefaultAction: "ACCEPT",
+		OutboundRules: []iptables.OutboundRule{
+			{Host: "8.8.8.8", Proto: "udp", Port: "53", Action: "ACCEPT"},
+			{Host: "1.1.1.1", Proto: "tcp", Port: "80", Action: "ACCEPT"},
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			conf, err := parseConfig([]byte(tc.input), tc.args, tc.containerID)
+	conf, err := parseConfig([]byte(input), args, "test-container")
+	assert.NoError(t, err)
+	assert.Equal(t, expectedConfig, conf)
+}
 
-			if tc.expectedError != "" {
-				assert.Error(t, err)
-				assert.Contains(t, err.Error(), tc.expectedError)
-				assert.Nil(t, conf)
-			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, tc.expectedConfig, conf)
-			}
-		})
+func TestParseConfigInvalidAdditionalRules(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT",
+		"outboundRules": [
+			{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+		]
+	}`
+	args := `outbound.additional_rules=[{"host":"1.1.1.1","proto":"tcp","port":"80","action":"ACCEPT",}]` // Note the trailing comma
+
+	conf, err := parseConfig([]byte(input), args, "test-container")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to parse additional rules from CNI args")
+	assert.Nil(t, conf)
+}
+
+func TestParseConfigEmptyAdditionalRules(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT",
+		"outboundRules": [
+			{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+		]
+	}`
+	args := `outbound.additional_rules=[]`
+
+	expectedConfig := &PluginConf{
+		NetConf: types.NetConf{
+			CNIVersion: "0.4.0",
+			Name:       "test-net",
+			Type:       "outbound",
+		},
+		MainChainName: "TEST-OUTBOUND",
+		DefaultAction: "ACCEPT",
+		OutboundRules: []iptables.OutboundRule{
+			{Host: "8.8.8.8", Proto: "udp", Port: "53", Action: "ACCEPT"},
+		},
 	}
+
+	conf, err := parseConfig([]byte(input), args, "test-container")
+	assert.NoError(t, err)
+	assert.Equal(t, expectedConfig, conf)
 }
 
 func TestCmdAdd(t *testing.T) {
 	input := `{
-        "cniVersion": "0.4.0",
-        "name": "test-net",
-        "type": "outbound",
-        "mainChainName": "TEST-OUTBOUND",
-        "defaultAction": "ACCEPT",
-        "outboundRules": [
-            {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
-        ],
-        "prevResult": {
-            "cniVersion": "0.4.0",
-            "interfaces": [
-                {
-                    "name": "eth0",
-                    "mac": "00:11:22:33:44:55"
-                }
-            ],
-            "ips": [
-                {
-                    "version": "4",
-                    "interface": 0,
-                    "address": "10.0.0.2/24",
-                    "gateway": "10.0.0.1"
-                }
-            ],
-            "routes": [
-                {
-                    "dst": "0.0.0.0/0",
-                    "gw": "10.0.0.1"
-                }
-            ]
-        }
-    }`
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT",
+		"outboundRules": [
+			{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+		],
+		"prevResult": {
+			"cniVersion": "0.4.0",
+			"interfaces": [
+				{
+					"name": "eth0",
+					"mac": "00:11:22:33:44:55"
+				}
+			],
+			"ips": [
+				{
+					"version": "4",
+					"interface": 0,
+					"address": "10.0.0.2/24",
+					"gateway": "10.0.0.1"
+				}
+			],
+			"routes": [
+				{
+					"dst": "0.0.0.0/0",
+					"gw": "10.0.0.1"
+				}
+			]
+		}
+	}`
 
 	args := &skel.CmdArgs{
 		ContainerID: "test-container",
@@ -303,7 +288,6 @@ func TestCmdAdd(t *testing.T) {
 	mockManager.On("AddRule", mock.Anything, mock.Anything).Return(nil)
 	mockManager.On("AddJumpRule", "10.0.0.2", mock.Anything).Return(nil)
 
-	// Override newIPTablesManager
 	origNewIPTablesManager := newIPTablesManager
 	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
 		return mockManager, nil
@@ -317,25 +301,25 @@ func TestCmdAdd(t *testing.T) {
 
 func TestCmdAddNoIPs(t *testing.T) {
 	input := `{
-        "cniVersion": "0.4.0",
-        "name": "test-net",
-        "type": "outbound",
-        "mainChainName": "TEST-OUTBOUND",
-        "defaultAction": "ACCEPT",
-        "outboundRules": [
-            {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
-        ],
-        "prevResult": {
-            "cniVersion": "0.4.0",
-            "interfaces": [
-                {
-                    "name": "eth0",
-                    "mac": "00:11:22:33:44:55"
-                }
-            ],
-            "ips": []
-        }
-    }`
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT",
+		"outboundRules": [
+			{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+		],
+		"prevResult": {
+			"cniVersion": "0.4.0",
+			"interfaces": [
+				{
+					"name": "eth0",
+					"mac": "00:11:22:33:44:55"
+				}
+			],
+			"ips": []
+		}
+	}`
 
 	args := &skel.CmdArgs{
 		ContainerID: "test-container",
@@ -348,7 +332,6 @@ func TestCmdAddNoIPs(t *testing.T) {
 
 	mockManager := new(MockIPTablesManager)
 
-	// Override newIPTablesManager
 	origNewIPTablesManager := newIPTablesManager
 	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
 		return mockManager, nil
@@ -362,38 +345,38 @@ func TestCmdAddNoIPs(t *testing.T) {
 
 func TestCmdAddEnsureMainChainExistsFailure(t *testing.T) {
 	input := `{
-            "cniVersion": "0.4.0",
-            "name": "test-net",
-            "type": "outbound",
-            "mainChainName": "TEST-OUTBOUND",
-            "defaultAction": "ACCEPT",
-            "outboundRules": [
-                {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
-            ],
-            "prevResult": {
-                "cniVersion": "0.4.0",
-                "interfaces": [
-                    {
-                        "name": "eth0",
-                        "mac": "00:11:22:33:44:55"
-                    }
-                ],
-                "ips": [
-                    {
-                        "version": "4",
-                        "interface": 0,
-                        "address": "10.0.0.2/24",
-                        "gateway": "10.0.0.1"
-                    }
-                ],
-                "routes": [
-                    {
-                        "dst": "0.0.0.0/0",
-                        "gw": "10.0.0.1"
-                    }
-                ]
-            }
-        }`
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT",
+		"outboundRules": [
+			{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+		],
+		"prevResult": {
+			"cniVersion": "0.4.0",
+			"interfaces": [
+				{
+					"name": "eth0",
+					"mac": "00:11:22:33:44:55"
+				}
+			],
+			"ips": [
+				{
+					"version": "4",
+					"interface": 0,
+					"address": "10.0.0.2/24",
+					"gateway": "10.0.0.1"
+				}
+			],
+			"routes": [
+				{
+					"dst": "0.0.0.0/0",
+					"gw": "10.0.0.1"
+				}
+			]
+		}
+	}`
 
 	args := &skel.CmdArgs{
 		ContainerID: "test-container",
@@ -407,7 +390,6 @@ func TestCmdAddEnsureMainChainExistsFailure(t *testing.T) {
 	mockManager := new(MockIPTablesManager)
 	mockManager.On("EnsureMainChainExists").Return(fmt.Errorf("failed to create main chain"))
 
-	// Override newIPTablesManager
 	origNewIPTablesManager := newIPTablesManager
 	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
 		return mockManager, nil
@@ -422,38 +404,38 @@ func TestCmdAddEnsureMainChainExistsFailure(t *testing.T) {
 
 func TestCmdAddEnsureCreateContainerChainFailure(t *testing.T) {
 	input := `{
-            "cniVersion": "0.4.0",
-            "name": "test-net",
-            "type": "outbound",
-            "mainChainName": "TEST-OUTBOUND",
-            "defaultAction": "ACCEPT",
-            "outboundRules": [
-                {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
-            ],
-            "prevResult": {
-                "cniVersion": "0.4.0",
-                "interfaces": [
-                    {
-                        "name": "eth0",
-                        "mac": "00:11:22:33:44:55"
-                    }
-                ],
-                "ips": [
-                    {
-                        "version": "4",
-                        "interface": 0,
-                        "address": "10.0.0.2/24",
-                        "gateway": "10.0.0.1"
-                    }
-                ],
-                "routes": [
-                    {
-                        "dst": "0.0.0.0/0",
-                        "gw": "10.0.0.1"
-                    }
-                ]
-            }
-        }`
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT",
+		"outboundRules": [
+			{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+		],
+		"prevResult": {
+			"cniVersion": "0.4.0",
+			"interfaces": [
+				{
+					"name": "eth0",
+					"mac": "00:11:22:44:55"
+				}
+			],
+			"ips": [
+				{
+					"version": "4",
+					"interface": 0,
+					"address": "10.0.0.2/24",
+					"gateway": "10.0.0.1"
+				}
+			],
+			"routes": [
+				{
+					"dst": "0.0.0.0/0",
+					"gw": "10.0.0.1"
+				}
+			]
+		}
+	}`
 
 	args := &skel.CmdArgs{
 		ContainerID: "test-container",
@@ -468,7 +450,6 @@ func TestCmdAddEnsureCreateContainerChainFailure(t *testing.T) {
 	mockManager.On("EnsureMainChainExists").Return(nil)
 	mockManager.On("CreateContainerChain", mock.Anything).Return(fmt.Errorf("failed to create container chain"))
 
-	// Override newIPTablesManager
 	origNewIPTablesManager := newIPTablesManager
 	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
 		return mockManager, nil
@@ -478,6 +459,169 @@ func TestCmdAddEnsureCreateContainerChainFailure(t *testing.T) {
 	err := cmdAdd(args)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to create container chain")
+	mockManager.AssertExpectations(t)
+}
+
+func TestCmdAddRuleFailure(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT",
+		"outboundRules": [
+			{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"},
+			{"host": "1.1.1.1", "proto": "tcp", "port": "80", "action": "ACCEPT"}
+		],
+		"prevResult": {
+			"cniVersion": "0.4.0",
+			"interfaces": [
+				{
+					"name": "eth0",
+					"mac": "00:11:22:33:44:55"
+				}
+			],
+			"ips": [
+				{
+					"version": "4",
+					"interface": 0,
+					"address": "10.0.0.2/24",
+					"gateway": "10.0.0.1"
+				}
+			],
+			"routes": [
+				{
+					"dst": "0.0.0.0/0",
+					"gw": "10.0.0.1"
+				}
+			]
+		}
+	}`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	mockManager := new(MockIPTablesManager)
+	mockManager.On("EnsureMainChainExists").Return(nil)
+	mockManager.On("CreateContainerChain", mock.Anything).Return(nil)
+	mockManager.On("AddRule", mock.Anything, mock.MatchedBy(func(rule iptables.OutboundRule) bool {
+		return rule.Host == "8.8.8.8"
+	})).Return(nil)
+	mockManager.On("AddRule", mock.Anything, mock.MatchedBy(func(rule iptables.OutboundRule) bool {
+		return rule.Host == "1.1.1.1"
+	})).Return(fmt.Errorf("failed to add rule"))
+
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return mockManager, nil
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdAdd(args)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to add rule to container chain: failed to add rule")
+	mockManager.AssertExpectations(t)
+}
+
+func TestCmdAddNoPrevResult(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT",
+		"outboundRules": [
+			{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+		]
+	}`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	mockManager := new(MockIPTablesManager)
+	mockManager.On("EnsureMainChainExists").Return(nil)
+	mockManager.On("CreateContainerChain", mock.Anything).Return(nil)
+	mockManager.On("AddRule", mock.Anything, mock.Anything).Return(nil)
+
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return mockManager, nil
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdAdd(args)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no prevResult found")
+
+	mockManager.AssertExpectations(t)
+}
+
+func TestCmdAddJumpRuleFailure(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT",
+		"outboundRules": [
+			{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+		],
+		"prevResult": {
+			"cniVersion": "0.4.0",
+			"interfaces": [
+				{
+					"name": "eth0",
+					"mac": "00:11:22:33:44:55"
+				}
+			],
+			"ips": [
+				{
+					"version": "4",
+					"interface": 0,
+					"address": "10.0.0.2/24",
+					"gateway": "10.0.0.1"
+				}
+			]
+		}
+	}`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	mockManager := new(MockIPTablesManager)
+	mockManager.On("EnsureMainChainExists").Return(nil)
+	mockManager.On("CreateContainerChain", mock.Anything).Return(nil)
+	mockManager.On("AddRule", mock.Anything, mock.Anything).Return(nil)
+	mockManager.On("AddJumpRule", "10.0.0.2", mock.Anything).Return(fmt.Errorf("failed to add jump rule"))
+
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return mockManager, nil
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdAdd(args)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to add jump rule to main chain: failed to add jump rule")
+
 	mockManager.AssertExpectations(t)
 }
 
@@ -506,7 +650,6 @@ func TestCmdDel(t *testing.T) {
 	mockManager.On("RemoveJumpRuleByTargetChain", mock.Anything).Return(nil)
 	mockManager.On("ClearAndDeleteChain", mock.Anything).Return(nil)
 
-	// Override newIPTablesManager
 	origNewIPTablesManager := newIPTablesManager
 	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
 		return mockManager, nil
@@ -515,6 +658,105 @@ func TestCmdDel(t *testing.T) {
 
 	err := cmdDel(args)
 	assert.NoError(t, err)
+	mockManager.AssertExpectations(t)
+}
+
+func TestCmdDelParseConfigError(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT",
+		"invalidField": true,
+	}`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	mockManager := new(MockIPTablesManager)
+
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return mockManager, nil
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdDel(args)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to parse network configuration")
+}
+
+func TestCmdDelRemoveJumpRuleByTargetChainError(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT"
+	}`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	mockManager := new(MockIPTablesManager)
+	mockManager.On("RemoveJumpRuleByTargetChain", mock.Anything).Return(fmt.Errorf("failed to remove jump rule"))
+	mockManager.On("ClearAndDeleteChain", mock.Anything).Return(nil)
+
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return mockManager, nil
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdDel(args)
+	assert.NoError(t, err) // cmdDel should not return an error even if RemoveJumpRuleByTargetChain fails
+	mockManager.AssertExpectations(t)
+}
+
+func TestCmdDelClearAndDeleteChainError(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT"
+	}`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	mockManager := new(MockIPTablesManager)
+	mockManager.On("RemoveJumpRuleByTargetChain", mock.Anything).Return(nil)
+	mockManager.On("ClearAndDeleteChain", mock.Anything).Return(fmt.Errorf("failed to clear and delete chain"))
+
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return mockManager, nil
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdDel(args)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to clear and delete container chain")
 	mockManager.AssertExpectations(t)
 }
 
@@ -543,7 +785,6 @@ func TestCmdCheck(t *testing.T) {
 	mockManager.On("ChainExists", mock.Anything).Return(true, nil)
 	mockManager.On("VerifyRules", mock.Anything, mock.Anything).Return(nil)
 
-	// Override newIPTablesManager
 	origNewIPTablesManager := newIPTablesManager
 	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
 		return mockManager, nil
@@ -555,7 +796,104 @@ func TestCmdCheck(t *testing.T) {
 	mockManager.AssertExpectations(t)
 }
 
-func TestCmdDelWithNoIPTablesManager(t *testing.T) {
+func TestCmdCheckNewIPTablesManagerFailure(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT"
+	}`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return nil, fmt.Errorf("failed to create IPTablesManager")
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdCheck(args)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to create IPTablesManager")
+}
+
+func TestCmdCheckChainExistsFailureForMainChain(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT"
+	}`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	mockManager := new(MockIPTablesManager)
+	mockManager.On("ChainExists", "TEST-OUTBOUND").Return(false, nil)
+
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return mockManager, nil
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdCheck(args)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "main chain TEST-OUTBOUND does not exist")
+	mockManager.AssertExpectations(t)
+}
+
+func TestCmdCheckChainExistsFailureForContainerChain(t *testing.T) {
+	input := `{
+		"cniVersion": "0.4.0",
+		"name": "test-net",
+		"type": "outbound",
+		"mainChainName": "TEST-OUTBOUND",
+		"defaultAction": "ACCEPT"
+	}`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	mockManager := new(MockIPTablesManager)
+	mockManager.On("ChainExists", "TEST-OUTBOUND").Return(true, nil)
+	mockManager.On("ChainExists", mock.Anything).Return(false, nil)
+
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return mockManager, nil
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdCheck(args)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "container chain")
+	assert.Contains(t, err.Error(), "does not exist")
+	mockManager.AssertExpectations(t)
+}
+
+func TestCmdCheckVerifyRulesFailure(t *testing.T) {
 	input := `{
 		"cniVersion": "0.4.0",
 		"name": "test-net",
@@ -576,77 +914,28 @@ func TestCmdDelWithNoIPTablesManager(t *testing.T) {
 		StdinData:   []byte(input),
 	}
 
-	// Override newIPTablesManager to return an error
+	mockManager := new(MockIPTablesManager)
+	mockManager.On("ChainExists", mock.Anything).Return(true, nil)
+	mockManager.On("VerifyRules", mock.Anything, mock.Anything).Return(fmt.Errorf("rule verification failed"))
+
 	origNewIPTablesManager := newIPTablesManager
 	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
-		return nil, fmt.Errorf("failed to create IPTablesManager")
+		return mockManager, nil
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
 
-	err := cmdDel(args)
+	err := cmdCheck(args)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to create IPTablesManager")
-}
-
-func TestParseAdditionalRules(t *testing.T) {
-	testCases := []struct {
-		name          string
-		args          string
-		expectedRules []iptables.OutboundRule
-		expectedError bool
-	}{
-		{
-			name: "Valid additional rules",
-			args: "outbound.additional_rules=[{\"host\":\"1.1.1.1\",\"proto\":\"tcp\",\"port\":\"80\",\"action\":\"ACCEPT\"}]",
-			expectedRules: []iptables.OutboundRule{
-				{Host: "1.1.1.1", Proto: "tcp", Port: "80", Action: "ACCEPT"},
-			},
-			expectedError: false,
-		},
-		{
-			name:          "No additional rules",
-			args:          "",
-			expectedRules: nil, // Expect nil instead of an empty slice
-			expectedError: false,
-		},
-		{
-			name:          "Invalid JSON",
-			args:          "outbound.additional_rules=[{\"host\":\"1.1.1.1\",\"proto\":\"tcp\",\"port\":\"80\",\"action\":\"ACCEPT\",}]",
-			expectedRules: nil,
-			expectedError: true,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			rules, err := parseAdditionalRules(tc.args, "test-container")
-			if tc.expectedError {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-				if tc.expectedRules == nil {
-					assert.Nil(t, rules)
-				} else {
-					assert.Equal(t, tc.expectedRules, rules)
-				}
-			}
-		})
-	}
-}
-
-func TestGenerateChainName(t *testing.T) {
-	chainName := generateChainName("test-net", "test-container")
-	assert.NotEmpty(t, chainName)
-	assert.Contains(t, chainName, "OUT-")
+	assert.Contains(t, err.Error(), "rule verification failed")
+	mockManager.AssertExpectations(t)
 }
 
 func TestSetupLogging(t *testing.T) {
-	// Create a temporary directory for testing
 	tempDir, err := os.MkdirTemp("", "cni-outbound-test")
 	if err != nil {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
-	defer os.RemoveAll(tempDir) // Clean up after the test
+	defer os.RemoveAll(tempDir)
 
 	testCases := []struct {
 		name          string
@@ -716,788 +1005,54 @@ func TestSetupLogging(t *testing.T) {
 	}
 }
 
-func TestParseConfigInvalidJSON(t *testing.T) {
-	invalidJSON := `{
-        "cniVersion": "0.4.0",
-        "name": "test-net",
-        "type": "outbound",
-        "mainChainName": "TEST-OUTBOUND",
-        "defaultAction": "ACCEPT",
-        "outboundRules": [
-            {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
-        ],
-    }` // Note the trailing comma, which makes this invalid JSON
-
-	_, err := parseConfig([]byte(invalidJSON), "", "test-container")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to parse network configuration")
-}
-
-func TestParseConfigMissingFields(t *testing.T) {
-	missingFieldsJSON := `{
-        "cniVersion": "0.4.0",
-        "type": "outbound"
-    }`
-
-	conf, err := parseConfig([]byte(missingFieldsJSON), "", "test-container")
-
-	// The function doesn't immediately fail on missing fields
-	assert.NoError(t, err)
-
-	// Instead, check that the required fields are empty or have default values
-	assert.Empty(t, conf.Name)
-	assert.Equal(t, "CNI-OUTBOUND", conf.MainChainName)
-	assert.Equal(t, "DROP", conf.DefaultAction)
-	assert.Empty(t, conf.OutboundRules)
-
-	// The PrevResult should be nil because it's not provided in the input
-	assert.Nil(t, conf.PrevResult)
-}
-
-func TestParseAdditionalRulesInvalidJSON(t *testing.T) {
-	invalidArgs := "outbound.additional_rules=[{\"host\":\"1.1.1.1\",\"proto\":\"tcp\",\"port\":\"80\",\"action\":\"ACCEPT\",}]" // Note the trailing comma
-
-	_, err := parseAdditionalRules(invalidArgs, "test-container")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to parse additional rules from CNI args")
-}
-
-func TestCmdAddIPTablesManagerFailure(t *testing.T) {
-	input := `{
-        "cniVersion": "0.4.0",
-        "name": "test-net",
-        "type": "outbound",
-        "mainChainName": "TEST-OUTBOUND",
-        "defaultAction": "ACCEPT",
-        "outboundRules": [
-            {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
-        ],
-        "prevResult": {
-            "interfaces": [
-                {
-                    "name": "eth0",
-                    "mac": "00:11:22:33:44:55"
-                }
-            ],
-            "ips": [
-                {
-                    "address": "10.0.0.2/24",
-                    "gateway": "10.0.0.1"
-                }
-            ]
-        }
-    }`
-
-	args := &skel.CmdArgs{
-		ContainerID: "test-container",
-		Netns:       "/var/run/netns/test",
-		IfName:      "eth0",
-		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
-		Path:        "/opt/cni/bin",
-		StdinData:   []byte(input),
-	}
-
-	// Override newIPTablesManager to return an error
-	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
-		return nil, fmt.Errorf("failed to create IPTablesManager")
-	}
-	defer func() { newIPTablesManager = origNewIPTablesManager }()
-
-	err := cmdAdd(args)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to create IPTablesManager")
-}
-
-func TestCmdAddRuleFailure(t *testing.T) {
-	input := `{
-            "cniVersion": "0.4.0",
-            "name": "test-net",
-            "type": "outbound",
-            "mainChainName": "TEST-OUTBOUND",
-            "defaultAction": "ACCEPT",
-            "outboundRules": [
-                {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"},
-                {"host": "1.1.1.1", "proto": "tcp", "port": "80", "action": "ACCEPT"}
-            ],
-            "prevResult": {
-                "cniVersion": "0.4.0",
-                "interfaces": [
-                    {
-                        "name": "eth0",
-                        "mac": "00:11:22:33:44:55"
-                    }
-                ],
-                "ips": [
-                    {
-                        "version": "4",
-                        "interface": 0,
-                        "address": "10.0.0.2/24",
-                        "gateway": "10.0.0.1"
-                    }
-                ],
-                "routes": [
-                    {
-                        "dst": "0.0.0.0/0",
-                        "gw": "10.0.0.1"
-                    }
-                ]
-            }
-        }`
-
-	args := &skel.CmdArgs{
-		ContainerID: "test-container",
-		Netns:       "/var/run/netns/test",
-		IfName:      "eth0",
-		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
-		Path:        "/opt/cni/bin",
-		StdinData:   []byte(input),
-	}
-
-	mockManager := new(MockIPTablesManager)
-	mockManager.On("EnsureMainChainExists").Return(nil)
-	mockManager.On("CreateContainerChain", mock.Anything).Return(nil)
-	mockManager.On("AddRule", mock.Anything, mock.MatchedBy(func(rule iptables.OutboundRule) bool {
-		return rule.Host == "8.8.8.8"
-	})).Return(nil)
-	mockManager.On("AddRule", mock.Anything, mock.MatchedBy(func(rule iptables.OutboundRule) bool {
-		return rule.Host == "1.1.1.1"
-	})).Return(fmt.Errorf("failed to add rule"))
-
-	// Override newIPTablesManager
-	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
-		return mockManager, nil
-	}
-	defer func() { newIPTablesManager = origNewIPTablesManager }()
-
-	err := cmdAdd(args)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to add rule to container chain: failed to add rule")
-	mockManager.AssertExpectations(t)
-}
-
-func TestCmdAddNoPrevResult(t *testing.T) {
-	input := `{
-            "cniVersion": "0.4.0",
-            "name": "test-net",
-            "type": "outbound",
-            "mainChainName": "TEST-OUTBOUND",
-            "defaultAction": "ACCEPT",
-            "outboundRules": [
-                {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
-            ]
-        }`
-
-	args := &skel.CmdArgs{
-		ContainerID: "test-container",
-		Netns:       "/var/run/netns/test",
-		IfName:      "eth0",
-		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
-		Path:        "/opt/cni/bin",
-		StdinData:   []byte(input),
-	}
-
-	mockManager := new(MockIPTablesManager)
-	mockManager.On("EnsureMainChainExists").Return(nil)
-	mockManager.On("CreateContainerChain", mock.Anything).Return(nil)
-	mockManager.On("AddRule", mock.Anything, mock.Anything).Return(nil)
-
-	// Override newIPTablesManager
-	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
-		return mockManager, nil
-	}
-	defer func() { newIPTablesManager = origNewIPTablesManager }()
-
-	err := cmdAdd(args)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "no prevResult found")
-
-	// The mock expectations for CreateContainerChain and AddRule should not be met
-	// because the function should return early due to missing prevResult
-	mockManager.AssertExpectations(t)
-}
-
-func TestCmdAddJumpRuleFailure(t *testing.T) {
-	input := `{
-            "cniVersion": "0.4.0",
-            "name": "test-net",
-            "type": "outbound",
-            "mainChainName": "TEST-OUTBOUND",
-            "defaultAction": "ACCEPT",
-            "outboundRules": [
-                {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
-            ],
-            "prevResult": {
-                "cniVersion": "0.4.0",
-                "interfaces": [
-                    {
-                        "name": "eth0",
-                        "mac": "00:11:22:33:44:55"
-                    }
-                ],
-                "ips": [
-                    {
-                        "version": "4",
-                        "interface": 0,
-                        "address": "10.0.0.2/24",
-                        "gateway": "10.0.0.1"
-                    }
-                ]
-            }
-        }`
-
-	args := &skel.CmdArgs{
-		ContainerID: "test-container",
-		Netns:       "/var/run/netns/test",
-		IfName:      "eth0",
-		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
-		Path:        "/opt/cni/bin",
-		StdinData:   []byte(input),
-	}
-
-	mockManager := new(MockIPTablesManager)
-	mockManager.On("EnsureMainChainExists").Return(nil)
-	mockManager.On("CreateContainerChain", mock.Anything).Return(nil)
-	mockManager.On("AddRule", mock.Anything, mock.Anything).Return(nil)
-	mockManager.On("AddJumpRule", "10.0.0.2", mock.Anything).Return(fmt.Errorf("failed to add jump rule"))
-
-	// Override newIPTablesManager
-	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
-		return mockManager, nil
-	}
-	defer func() { newIPTablesManager = origNewIPTablesManager }()
-
-	err := cmdAdd(args)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to add jump rule to main chain: failed to add jump rule")
-
-	mockManager.AssertExpectations(t)
-}
-
-func TestCmdDelNoPrevResult(t *testing.T) {
-	input := `{
-        "cniVersion": "0.4.0",
-        "name": "test-net",
-        "type": "outbound",
-        "mainChainName": "TEST-OUTBOUND",
-        "defaultAction": "ACCEPT",
-        "outboundRules": [
-            {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
-        ]
-    }`
-
-	args := &skel.CmdArgs{
-		ContainerID: "test-container",
-		Netns:       "/var/run/netns/test",
-		IfName:      "eth0",
-		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
-		Path:        "/opt/cni/bin",
-		StdinData:   []byte(input),
-	}
-
-	mockManager := new(MockIPTablesManager)
-	mockManager.On("RemoveJumpRuleByTargetChain", mock.Anything).Return(nil)
-	mockManager.On("ClearAndDeleteChain", mock.Anything).Return(nil)
-
-	// Override newIPTablesManager
-	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
-		return mockManager, nil
-	}
-	defer func() { newIPTablesManager = origNewIPTablesManager }()
-
-	err := cmdDel(args)
-	assert.NoError(t, err)
-	mockManager.AssertExpectations(t)
-}
-
-func TestCmdCheckChainExistenceFailure(t *testing.T) {
-	input := `{
-        "cniVersion": "0.4.0",
-        "name": "test-net",
-        "type": "outbound",
-        "mainChainName": "TEST-OUTBOUND",
-        "defaultAction": "ACCEPT",
-        "outboundRules": [
-            {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
-        ]
-    }`
-
-	args := &skel.CmdArgs{
-		ContainerID: "test-container",
-		Netns:       "/var/run/netns/test",
-		IfName:      "eth0",
-		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
-		Path:        "/opt/cni/bin",
-		StdinData:   []byte(input),
-	}
-
-	mockManager := new(MockIPTablesManager)
-	mockManager.On("ChainExists", mock.Anything).Return(false, nil)
-
-	// Override newIPTablesManager
-	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
-		return mockManager, nil
-	}
-	defer func() { newIPTablesManager = origNewIPTablesManager }()
-
-	err := cmdCheck(args)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "does not exist")
-	mockManager.AssertExpectations(t)
-}
-
-func TestParseConfig_PrevResult(t *testing.T) {
-	tests := []struct {
-		name        string
-		input       string
-		expectError bool
-		errorMsg    string
+func TestParseAdditionalRules(t *testing.T) {
+	testCases := []struct {
+		name          string
+		args          string
+		expectedRules []iptables.OutboundRule
+		expectedError bool
 	}{
 		{
-			name: "Valid prevResult",
-			input: `{
-                "cniVersion": "0.4.0",
-                "name": "test-net",
-                "type": "outbound",
-                "prevResult": {
-                    "cniVersion": "0.4.0",
-                    "interfaces": [{"name": "eth0", "mac": "00:11:22:33:44:55"}],
-                    "ips": [{"version": "4", "address": "10.0.0.2/24", "gateway": "10.0.0.1"}]
-                }
-            }`,
-			expectError: false,
+			name: "Valid additional rules",
+			args: "outbound.additional_rules=[{\"host\":\"1.1.1.1\",\"proto\":\"tcp\",\"port\":\"80\",\"action\":\"ACCEPT\"}]",
+			expectedRules: []iptables.OutboundRule{
+				{Host: "1.1.1.1", Proto: "tcp", Port: "80", Action: "ACCEPT"},
+			},
+			expectedError: false,
 		},
 		{
-			name: "No prevResult",
-			input: `{
-                "cniVersion": "0.4.0",
-                "name": "test-net",
-                "type": "outbound"
-            }`,
-			expectError: false,
+			name:          "No additional rules",
+			args:          "",
+			expectedRules: nil,
+			expectedError: false,
 		},
 		{
-			name: "prevResult with extra key",
-			input: `{
-                "cniVersion": "0.4.0",
-                "name": "test-net",
-                "type": "outbound",
-                "prevResult": {
-                    "cniVersion": "0.4.0",
-                    "interfaces": [{"name": "eth0", "mac": "00:11:22:33:44:55"}],
-                    "ips": [{"version": "4", "address": "10.0.0.2/24", "gateway": "10.0.0.1"}],
-                    "extraKey": "extraValue"
-                }
-            }`,
-			expectError: false,
-		},
-		{
-			name: "Incompatible CNI versions",
-			input: `{
-                "cniVersion": "0.4.0",
-                "name": "test-net",
-                "type": "outbound",
-                "prevResult": {
-                    "cniVersion": "0.1.0",
-                    "interfaces": [{"name": "eth0", "mac": "00:11:22:33:44:55"}],
-                    "ips": [{"version": "4", "address": "10.0.0.2/24", "gateway": "10.0.0.1"}]
-                }
-            }`,
-			expectError: true,
-			errorMsg:    "could not parse prevResult",
-		},
-		{
-			name: "Missing required interfaces in prevResult",
-			input: `{
-                "cniVersion": "0.4.0",
-                "name": "test-net",
-                "type": "outbound",
-                "prevResult": {
-                    "cniVersion": "0.4.0",
-                    "ips": [{"version": "4", "address": "10.0.0.2/24", "gateway": "10.0.0.1"}]
-                }
-            }`,
-			expectError: true,
-			errorMsg:    "invalid prevResult structure: missing interfaces",
-		},
-		{
-			name: "Missing required ips in prevResult",
-			input: `{
-                "cniVersion": "0.4.0",
-                "name": "test-net",
-                "type": "outbound",
-                "prevResult": {
-                    "cniVersion": "0.4.0",
-                    "interfaces": [{"name": "eth0", "mac": "00:11:22:33:44:55"}]
-                }
-            }`,
-			expectError: true,
-			errorMsg:    "invalid prevResult structure: missing ips",
+			name:          "Invalid JSON",
+			args:          "outbound.additional_rules=[{\"host\":\"1.1.1.1\",\"proto\":\"tcp\",\"port\":\"80\",\"action\":\"ACCEPT\",}]",
+			expectedRules: nil,
+			expectedError: true,
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			conf, err := parseConfig([]byte(tt.input), "", "test-container")
-
-			if tt.expectError {
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			rules, err := parseAdditionalRules(tc.args, "test-container")
+			if tc.expectedError {
 				assert.Error(t, err)
-				assert.Contains(t, err.Error(), tt.errorMsg)
-				assert.Nil(t, conf)
 			} else {
 				assert.NoError(t, err)
-				assert.NotNil(t, conf)
-
-				if strings.Contains(tt.input, "prevResult") {
-					assert.NotNil(t, conf.PrevResult, "PrevResult should not be nil")
+				if tc.expectedRules == nil {
+					assert.Nil(t, rules)
 				} else {
-					assert.Nil(t, conf.PrevResult, "PrevResult should be nil")
+					assert.Equal(t, tc.expectedRules, rules)
 				}
 			}
 		})
 	}
 }
 
-func TestCmdDelNewIPTablesManagerFailure(t *testing.T) {
-	input := `{
-            "cniVersion": "0.4.0",
-            "name": "test-net",
-            "type": "outbound",
-            "mainChainName": "TEST-OUTBOUND",
-            "defaultAction": "ACCEPT"
-        }`
-
-	args := &skel.CmdArgs{
-		ContainerID: "test-container",
-		Netns:       "/var/run/netns/test",
-		IfName:      "eth0",
-		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
-		Path:        "/opt/cni/bin",
-		StdinData:   []byte(input),
-	}
-
-	// Override newIPTablesManager to return an error
-	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
-		return nil, fmt.Errorf("failed to create IPTablesManager")
-	}
-	defer func() { newIPTablesManager = origNewIPTablesManager }()
-
-	err := cmdDel(args)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to create IPTablesManager")
-}
-
-func TestCmdDelRemoveJumpRuleByTargetChainFailure(t *testing.T) {
-	input := `{
-            "cniVersion": "0.4.0",
-            "name": "test-net",
-            "type": "outbound",
-            "mainChainName": "TEST-OUTBOUND",
-            "defaultAction": "ACCEPT"
-        }`
-
-	args := &skel.CmdArgs{
-		ContainerID: "test-container",
-		Netns:       "/var/run/netns/test",
-		IfName:      "eth0",
-		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
-		Path:        "/opt/cni/bin",
-		StdinData:   []byte(input),
-	}
-
-	mockManager := new(MockIPTablesManager)
-	mockManager.On("RemoveJumpRuleByTargetChain", mock.Anything).Return(fmt.Errorf("failed to remove jump rule"))
-	mockManager.On("ClearAndDeleteChain", mock.Anything).Return(nil)
-
-	// Override newIPTablesManager
-	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
-		return mockManager, nil
-	}
-	defer func() { newIPTablesManager = origNewIPTablesManager }()
-
-	err := cmdDel(args)
-	assert.NoError(t, err) // cmdDel should not return an error even if RemoveJumpRuleByTargetChain fails
-	mockManager.AssertExpectations(t)
-}
-
-func TestCmdDelClearAndDeleteChainFailure(t *testing.T) {
-	input := `{
-            "cniVersion": "0.4.0",
-            "name": "test-net",
-            "type": "outbound",
-            "mainChainName": "TEST-OUTBOUND",
-            "defaultAction": "ACCEPT"
-        }`
-
-	args := &skel.CmdArgs{
-		ContainerID: "test-container",
-		Netns:       "/var/run/netns/test",
-		IfName:      "eth0",
-		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
-		Path:        "/opt/cni/bin",
-		StdinData:   []byte(input),
-	}
-
-	mockManager := new(MockIPTablesManager)
-	mockManager.On("RemoveJumpRuleByTargetChain", mock.Anything).Return(nil)
-	mockManager.On("ClearAndDeleteChain", mock.Anything).Return(fmt.Errorf("failed to clear and delete chain"))
-
-	// Override newIPTablesManager
-	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
-		return mockManager, nil
-	}
-	defer func() { newIPTablesManager = origNewIPTablesManager }()
-
-	err := cmdDel(args)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to clear and delete container chain")
-	mockManager.AssertExpectations(t)
-}
-
-func TestCmdDelParseConfigError(t *testing.T) {
-	input := `{
-            "cniVersion": "0.4.0",
-            "name": "test-net",
-            "type": "outbound",
-            "mainChainName": "TEST-OUTBOUND",
-            "defaultAction": "ACCEPT",
-            "invalidField": true,
-        }`
-
-	args := &skel.CmdArgs{
-		ContainerID: "test-container",
-		Netns:       "/var/run/netns/test",
-		IfName:      "eth0",
-		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
-		Path:        "/opt/cni/bin",
-		StdinData:   []byte(input),
-	}
-
-	mockManager := new(MockIPTablesManager)
-
-	// Override newIPTablesManager
-	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
-		return mockManager, nil
-	}
-	defer func() { newIPTablesManager = origNewIPTablesManager }()
-
-	err := cmdDel(args)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to parse network configuration")
-}
-
-func TestCmdDelRemoveJumpRuleByTargetChainError(t *testing.T) {
-	input := `{
-            "cniVersion": "0.4.0",
-            "name": "test-net",
-            "type": "outbound",
-            "mainChainName": "TEST-OUTBOUND",
-            "defaultAction": "ACCEPT"
-        }`
-
-	args := &skel.CmdArgs{
-		ContainerID: "test-container",
-		Netns:       "/var/run/netns/test",
-		IfName:      "eth0",
-		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
-		Path:        "/opt/cni/bin",
-		StdinData:   []byte(input),
-	}
-
-	mockManager := new(MockIPTablesManager)
-	mockManager.On("RemoveJumpRuleByTargetChain", mock.Anything).Return(fmt.Errorf("failed to remove jump rule"))
-	mockManager.On("ClearAndDeleteChain", mock.Anything).Return(nil)
-
-	// Override newIPTablesManager
-	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
-		return mockManager, nil
-	}
-	defer func() { newIPTablesManager = origNewIPTablesManager }()
-
-	err := cmdDel(args)
-	assert.NoError(t, err) // cmdDel should not return an error even if RemoveJumpRuleByTargetChain fails
-	mockManager.AssertExpectations(t)
-}
-
-func TestCmdDelClearAndDeleteChainError(t *testing.T) {
-	input := `{
-            "cniVersion": "0.4.0",
-            "name": "test-net",
-            "type": "outbound",
-            "mainChainName": "TEST-OUTBOUND",
-            "defaultAction": "ACCEPT"
-        }`
-
-	args := &skel.CmdArgs{
-		ContainerID: "test-container",
-		Netns:       "/var/run/netns/test",
-		IfName:      "eth0",
-		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
-		Path:        "/opt/cni/bin",
-		StdinData:   []byte(input),
-	}
-
-	mockManager := new(MockIPTablesManager)
-	mockManager.On("RemoveJumpRuleByTargetChain", mock.Anything).Return(nil)
-	mockManager.On("ClearAndDeleteChain", mock.Anything).Return(fmt.Errorf("failed to clear and delete chain"))
-
-	// Override newIPTablesManager
-	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
-		return mockManager, nil
-	}
-	defer func() { newIPTablesManager = origNewIPTablesManager }()
-
-	err := cmdDel(args)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to clear and delete container chain")
-	mockManager.AssertExpectations(t)
-}
-
-func TestCmdCheckNewIPTablesManagerFailure(t *testing.T) {
-	input := `{
-            "cniVersion": "0.4.0",
-            "name": "test-net",
-            "type": "outbound",
-            "mainChainName": "TEST-OUTBOUND",
-            "defaultAction": "ACCEPT"
-        }`
-
-	args := &skel.CmdArgs{
-		ContainerID: "test-container",
-		Netns:       "/var/run/netns/test",
-		IfName:      "eth0",
-		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
-		Path:        "/opt/cni/bin",
-		StdinData:   []byte(input),
-	}
-
-	// Override newIPTablesManager to return an error
-	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
-		return nil, fmt.Errorf("failed to create IPTablesManager")
-	}
-	defer func() { newIPTablesManager = origNewIPTablesManager }()
-
-	err := cmdCheck(args)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to create IPTablesManager")
-}
-
-func TestCmdCheckChainExistsFailureForMainChain(t *testing.T) {
-	input := `{
-            "cniVersion": "0.4.0",
-            "name": "test-net",
-            "type": "outbound",
-            "mainChainName": "TEST-OUTBOUND",
-            "defaultAction": "ACCEPT"
-        }`
-
-	args := &skel.CmdArgs{
-		ContainerID: "test-container",
-		Netns:       "/var/run/netns/test",
-		IfName:      "eth0",
-		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
-		Path:        "/opt/cni/bin",
-		StdinData:   []byte(input),
-	}
-
-	mockManager := new(MockIPTablesManager)
-	mockManager.On("ChainExists", "TEST-OUTBOUND").Return(false, nil)
-
-	// Override newIPTablesManager
-	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
-		return mockManager, nil
-	}
-	defer func() { newIPTablesManager = origNewIPTablesManager }()
-
-	err := cmdCheck(args)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "main chain TEST-OUTBOUND does not exist")
-	mockManager.AssertExpectations(t)
-}
-
-func TestCmdCheckChainExistsFailureForContainerChain(t *testing.T) {
-	input := `{
-            "cniVersion": "0.4.0",
-            "name": "test-net",
-            "type": "outbound",
-            "mainChainName": "TEST-OUTBOUND",
-            "defaultAction": "ACCEPT"
-        }`
-
-	args := &skel.CmdArgs{
-		ContainerID: "test-container",
-		Netns:       "/var/run/netns/test",
-		IfName:      "eth0",
-		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
-		Path:        "/opt/cni/bin",
-		StdinData:   []byte(input),
-	}
-
-	mockManager := new(MockIPTablesManager)
-	mockManager.On("ChainExists", "TEST-OUTBOUND").Return(true, nil)
-	mockManager.On("ChainExists", mock.Anything).Return(false, nil)
-
-	// Override newIPTablesManager
-	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
-		return mockManager, nil
-	}
-	defer func() { newIPTablesManager = origNewIPTablesManager }()
-
-	err := cmdCheck(args)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "container chain")
-	assert.Contains(t, err.Error(), "does not exist")
-	mockManager.AssertExpectations(t)
-}
-
-func TestCmdCheckVerifyRulesFailure(t *testing.T) {
-	input := `{
-            "cniVersion": "0.4.0",
-            "name": "test-net",
-            "type": "outbound",
-            "mainChainName": "TEST-OUTBOUND",
-            "defaultAction": "ACCEPT",
-            "outboundRules": [
-                {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
-            ]
-        }`
-
-	args := &skel.CmdArgs{
-		ContainerID: "test-container",
-		Netns:       "/var/run/netns/test",
-		IfName:      "eth0",
-		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
-		Path:        "/opt/cni/bin",
-		StdinData:   []byte(input),
-	}
-
-	mockManager := new(MockIPTablesManager)
-	mockManager.On("ChainExists", mock.Anything).Return(true, nil)
-	mockManager.On("VerifyRules", mock.Anything, mock.Anything).Return(fmt.Errorf("rule verification failed"))
-
-	// Override newIPTablesManager
-	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
-		return mockManager, nil
-	}
-	defer func() { newIPTablesManager = origNewIPTablesManager }()
-
-	err := cmdCheck(args)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "rule verification failed")
-	mockManager.AssertExpectations(t)
+func TestGenerateChainName(t *testing.T) {
+	chainName := generateChainName("test-net", "test-container")
+	assert.NotEmpty(t, chainName)
+	assert.Contains(t, chainName, "OUT-")
 }
