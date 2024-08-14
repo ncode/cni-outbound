@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"testing"
 
 	"github.com/containernetworking/cni/pkg/skel"
@@ -291,12 +292,60 @@ func TestGenerateChainName(t *testing.T) {
 }
 
 func TestSetupLogging(t *testing.T) {
-	conf := &PluginConf{
-		Logging: LogConfig{
-			Enable: false,
+	testCases := []struct {
+		name          string
+		config        LogConfig
+		expectedDir   string
+		expectedError bool
+	}{
+		{
+			name: "Logging disabled",
+			config: LogConfig{
+				Enable: false,
+			},
+			expectedDir:   "",
+			expectedError: false,
+		},
+		{
+			name: "Logging enabled with custom directory",
+			config: LogConfig{
+				Enable:    true,
+				Directory: "/custom/log/dir",
+			},
+			expectedDir:   "/custom/log/dir",
+			expectedError: false,
+		},
+		{
+			name: "Logging enabled with default directory",
+			config: LogConfig{
+				Enable:    true,
+				Directory: "",
+			},
+			expectedDir:   "/var/log/cni",
+			expectedError: false,
 		},
 	}
-	err := setupLogging(conf)
-	assert.NoError(t, err)
-	assert.NotNil(t, logger)
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			conf := &PluginConf{
+				Logging: tc.config,
+			}
+
+			err := setupLogging(conf)
+
+			if tc.expectedError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tc.expectedDir, conf.Logging.Directory)
+				assert.NotNil(t, logger)
+
+				// Clean up any created log files
+				if conf.Logging.Enable {
+					os.RemoveAll(conf.Logging.Directory)
+				}
+			}
+		})
+	}
 }
