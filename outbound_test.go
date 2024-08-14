@@ -360,6 +360,127 @@ func TestCmdAddNoIPs(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid prevResult structure: missing ips")
 }
 
+func TestCmdAddEnsureMainChainExistsFailure(t *testing.T) {
+	input := `{
+            "cniVersion": "0.4.0",
+            "name": "test-net",
+            "type": "outbound",
+            "mainChainName": "TEST-OUTBOUND",
+            "defaultAction": "ACCEPT",
+            "outboundRules": [
+                {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+            ],
+            "prevResult": {
+                "cniVersion": "0.4.0",
+                "interfaces": [
+                    {
+                        "name": "eth0",
+                        "mac": "00:11:22:33:44:55"
+                    }
+                ],
+                "ips": [
+                    {
+                        "version": "4",
+                        "interface": 0,
+                        "address": "10.0.0.2/24",
+                        "gateway": "10.0.0.1"
+                    }
+                ],
+                "routes": [
+                    {
+                        "dst": "0.0.0.0/0",
+                        "gw": "10.0.0.1"
+                    }
+                ]
+            }
+        }`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	mockManager := new(MockIPTablesManager)
+	mockManager.On("EnsureMainChainExists").Return(fmt.Errorf("failed to create main chain"))
+
+	// Override newIPTablesManager
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return mockManager, nil
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdAdd(args)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to ensure main chain exists: failed to create main chain")
+	mockManager.AssertExpectations(t)
+}
+
+func TestCmdAddEnsureCreateContainerChainFailure(t *testing.T) {
+	input := `{
+            "cniVersion": "0.4.0",
+            "name": "test-net",
+            "type": "outbound",
+            "mainChainName": "TEST-OUTBOUND",
+            "defaultAction": "ACCEPT",
+            "outboundRules": [
+                {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+            ],
+            "prevResult": {
+                "cniVersion": "0.4.0",
+                "interfaces": [
+                    {
+                        "name": "eth0",
+                        "mac": "00:11:22:33:44:55"
+                    }
+                ],
+                "ips": [
+                    {
+                        "version": "4",
+                        "interface": 0,
+                        "address": "10.0.0.2/24",
+                        "gateway": "10.0.0.1"
+                    }
+                ],
+                "routes": [
+                    {
+                        "dst": "0.0.0.0/0",
+                        "gw": "10.0.0.1"
+                    }
+                ]
+            }
+        }`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	mockManager := new(MockIPTablesManager)
+	mockManager.On("EnsureMainChainExists").Return(nil)
+	mockManager.On("CreateContainerChain", mock.Anything).Return(fmt.Errorf("failed to create container chain"))
+
+	// Override newIPTablesManager
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return mockManager, nil
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdAdd(args)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to create container chain")
+	mockManager.AssertExpectations(t)
+}
+
 func TestCmdDel(t *testing.T) {
 	input := `{
 		"cniVersion": "0.4.0",
