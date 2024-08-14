@@ -380,6 +380,15 @@ func TestSetupLogging(t *testing.T) {
 			name: "Logging enabled with default directory",
 			config: LogConfig{
 				Enable:    true,
+				Directory: "/var/log/cni",
+			},
+			expectedDir:   "/var/log/cni",
+			expectedError: false,
+		},
+		{
+			name: "Logging enabled with empty directory",
+			config: LogConfig{
+				Enable:    true,
 				Directory: "",
 			},
 			expectedDir:   "/var/log/cni",
