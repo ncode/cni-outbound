@@ -1,5 +1,7 @@
 #!/bin/bash
 
+systemd.unified_cgroup_hierarchy=0
+
 # cgroup v2: enable nesting
 if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
     # move the processes from the root group to the /init group,
@@ -12,4 +14,4 @@ if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
         > /sys/fs/cgroup/cgroup.subtree_control
 fi
 
-nomad agent -dev -bind 0.0.0.0
+nomad agent -config=/etc/nomad

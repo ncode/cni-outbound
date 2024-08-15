@@ -6,7 +6,13 @@ services:
       - "4647:4647"  # RPC
       - "4648:4648"  # Serf WAN
     volumes:
-      - ./config.hcl:/etc/nomad/config.hcl:ro
-      - ./my-network.conflist:/opt/cni/config/my-network.conflist
-      - ./outbound:/opt/cni/bin/outbound
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
     privileged: true
+    deploy:
+      resources:
+        limits:
+          cpus: 2
+          memory: 512M
+        reservations:
+          cpus: 2
+          memory: 512M
