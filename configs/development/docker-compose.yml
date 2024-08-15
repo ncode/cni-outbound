@@ -1,0 +1,12 @@
+services:
+  nomad:
+    image: ncode/cni-output:dev 
+    ports:
+      - "4646:4646"  # HTTP API
+      - "4647:4647"  # RPC
+      - "4648:4648"  # Serf WAN
+    volumes:
+      - ./config.hcl:/etc/nomad/config.hcl:ro
+      - ./my-network.conflist:/opt/cni/config/my-network.conflist
+      - ./outbound:/opt/cni/bin/outbound
+    privileged: true
