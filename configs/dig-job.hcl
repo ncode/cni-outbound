@@ -20,7 +20,7 @@ job "dig-job" {
         data        = <<-EOT
           #!/bin/bash
           while true ; do
-            dig martinez.io @8.8.8.8
+            dig google.com
             sleep 5
           done
         EOT

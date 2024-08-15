@@ -12,6 +12,7 @@ RUN dnf update -y && \
     curl \
     git \
     unzip \
+    tcpdump \
     bind-utils \
     iproute \
     iputils \
