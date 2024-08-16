@@ -10,8 +10,8 @@ ENV ARCH=arm64
 RUN dnf update -y && \
     dnf install -y \
     curl \
-    git \
     unzip \
+    socat \
     tcpdump \
     bind-utils \
     iproute \
@@ -25,7 +25,7 @@ RUN dnf update -y && \
 
 # Download and install Nomad for the appropriate architecture
 RUN curl -fsSL https://releases.hashicorp.com/nomad/${NOMAD_VERSION}/nomad_${NOMAD_VERSION}_linux_${ARCH}.zip -o nomad.zip && \
-    mkdir -p /etc/nomad /var/lib/nomad && \
+    mkdir -p /etc/nomad /var/lib/nomad /var/log/cni && \
     unzip nomad.zip && \
     rm nomad.zip && \
     mv nomad /usr/local/bin/nomad
