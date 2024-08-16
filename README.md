@@ -18,6 +18,37 @@ The CNI Outbound Plugin is a Container Network Interface (CNI) plugin built to m
 - Supports ADD, DEL, and CHECK operations as per CNI specification
 - Integrates with existing CNI plugins as a chained plugin
 
+## Development Setup
+
+The project includes a development environment using Docker Compose. To use the development setup:
+
+1. Navigate to the `configs/development` directory:
+   ```
+   cd configs/development
+   ```
+
+2. Build the project, create the Docker image, and start the development environment:
+   ```
+   make all
+   ```
+
+   This command will:
+   - Build the plugin for Linux ARM64
+   - Create a Docker image with Nomad and the CNI plugin
+   - Start the Docker Compose environment
+
+3. To stop and remove the development environment:
+   ```
+   make down
+   ```
+
+4. To rebuild and restart the environment after making changes:
+   ```
+   make build docker-build down up
+   ```
+
+The development environment includes a Nomad server with the CNI Outbound Plugin pre-installed. You can access the Nomad UI at `http://localhost:4646`.
+
 ## Installation
 
 To install the CNI Outbound Plugin, follow these steps:
