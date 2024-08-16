@@ -17,6 +17,8 @@ RUN dnf update -y && \
     iproute \
     iputils \
     iptables \
+    ebtables \
+    procps-ng \
     ipset \
     ca-certificates && \
     dnf clean all 

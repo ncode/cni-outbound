@@ -11,7 +11,7 @@ data_dir   = "/var/lib/nomad"
 client {
   enabled               = true
   cpu_total_compute     = 2000
-  bridge_network_name   = "docker0"
+  bridge_network_name   = "cni0"
   bridge_network_subnet = "172.18.0.0/16"
 }
 

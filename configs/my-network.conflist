@@ -7,7 +7,7 @@
     }, 
     {
       "type": "bridge",
-      "bridge": "docker0",
+      "bridge": "cni0",
       "ipMasq": true,
       "isGateway": true,
       "forceAddress": true,

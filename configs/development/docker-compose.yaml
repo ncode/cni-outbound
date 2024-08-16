@@ -16,3 +16,7 @@ services:
         reservations:
           cpus: 2
           memory: 512M
+
+networks:
+  default:
+    driver: bridge
