@@ -80,12 +80,12 @@ func (m *IPTablesManager) EnsureMainChainExists() error {
 		}
 	}
 
-	// Remove any existing rule in the FORWARD chain (in case it's in the wrong place)
-	m.ipt.Delete("filter", "FORWARD", "-j", m.mainChainName)
+	// Remove any existing rule in the CNI-FORWARD chain (in case it's in the wrong place)
+	m.ipt.Delete("filter", "CNI-FORWARD", "-j", m.mainChainName)
 
-	// Add the jump to CNI-OUTBOUND at the beginning of the FORWARD chain
-	if err := m.ipt.Insert("filter", "FORWARD", 1, "-j", m.mainChainName); err != nil {
-		return fmt.Errorf("failed to add jump to main chain in FORWARD: %v", err)
+	// Add the jump to CNI-OUTBOUND at the beginning of the CNI-FORWARD chain
+	if err := m.ipt.Insert("filter", "CNI-FORWARD", 1, "-j", m.mainChainName); err != nil {
+		return fmt.Errorf("failed to add jump to main chain in CNI-FORWARD: %v", err)
 	}
 
 	return nil

@@ -149,8 +149,8 @@ func TestIPTablesManager(t *testing.T) {
 			t.Error("Main chain was not created")
 		}
 
-		// Check if the jump rule was added to the FORWARD chain
-		forwardRules := mockIpt.rules["FORWARD"]
+		// Check if the jump rule was added to the CNI-FORWARD chain
+		forwardRules := mockIpt.rules["CNI-FORWARD"]
 		expectedRule := "-j CNI-OUTBOUND"
 		found := false
 		for _, rule := range forwardRules {
@@ -160,12 +160,12 @@ func TestIPTablesManager(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("Jump to CNI-OUTBOUND not added to FORWARD chain. Rules: %v", forwardRules)
+			t.Errorf("Jump to CNI-OUTBOUND not added to CNI-FORWARD chain. Rules: %v", forwardRules)
 		}
 
-		// Check if the jump rule is at the beginning of the FORWARD chain
+		// Check if the jump rule is at the beginning of the CNI-FORWARD chain
 		if len(forwardRules) > 0 && !strings.Contains(forwardRules[0], expectedRule) {
-			t.Errorf("Jump to CNI-OUTBOUND is not at the beginning of FORWARD chain. First rule: %s", forwardRules[0])
+			t.Errorf("Jump to CNI-OUTBOUND is not at the beginning of CNI-FORWARD chain. First rule: %s", forwardRules[0])
 		}
 	})
 
@@ -252,7 +252,7 @@ func TestIPTablesManager(t *testing.T) {
 		if !mockIpt.chains["CNI-OUTBOUND"] {
 			t.Error("Main chain was not created")
 		}
-		rules := mockIpt.rules["FORWARD"]
+		rules := mockIpt.rules["CNI-FORWARD"]
 		expectedRule := "-j CNI-OUTBOUND"
 		found := false
 		for _, rule := range rules {
@@ -262,7 +262,7 @@ func TestIPTablesManager(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("Jump to CNI-OUTBOUND not added to FORWARD chain. Rules: %v", rules)
+			t.Errorf("Jump to CNI-OUTBOUND not added to CNI-FORWARD chain. Rules: %v", rules)
 		}
 	})
 
@@ -521,7 +521,7 @@ func TestEnsureMainChainExistsErrors(t *testing.T) {
 		{
 			name:          "Insert Error",
 			errorMethod:   "Insert",
-			expectedError: "failed to add jump to main chain in FORWARD: mock error",
+			expectedError: "failed to add jump to main chain in CNI-FORWARD: mock error",
 		},
 	}
 
@@ -549,8 +549,8 @@ func TestEnsureMainChainExistsErrors(t *testing.T) {
 				if !mockIpt.chains["CNI-OUTBOUND"] {
 					t.Error("Expected main chain to be created even if Insert fails")
 				}
-				if len(mockIpt.rules["FORWARD"]) > 0 {
-					t.Error("Expected no rules in FORWARD chain after Insert error")
+				if len(mockIpt.rules["CNI-FORWARD"]) > 0 {
+					t.Error("Expected no rules in CNI-FORWARD chain after Insert error")
 				}
 			}
 
