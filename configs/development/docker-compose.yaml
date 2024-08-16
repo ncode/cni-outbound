@@ -5,14 +5,19 @@ services:
       - "4646:4646"  # HTTP API
       - "4647:4647"  # RPC
       - "4648:4648"  # Serf WAN
+      - "8080:8080"  # Container handler
     volumes:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
     privileged: true
     deploy:
       resources:
         limits:
-          cpus: 2
+          cpus: 2.0
           memory: 512M
         reservations:
-          cpus: 2
+          cpus: 2.0
           memory: 512M
+
+networks:
+  default:
+    driver: bridge

@@ -7,7 +7,7 @@
     }, 
     {
       "type": "bridge",
-      "bridge": "docker0",
+      "bridge": "cni0",
       "ipMasq": true,
       "isGateway": true,
       "forceAddress": true,
@@ -39,17 +39,15 @@
       "type": "outbound",
       "chainName": "CNI-OUTBOUND",
       "defaultAction": "DROP",
+      "logging": {
+        "enable": true,
+        "directory": "/var/log/cni"
+      },
       "outboundRules": [
         {
-          "host": "0.0.0.0/0",
+          "host": "8.8.8.8/32",
           "proto": "udp",
           "port": "53",
-          "action": "ACCEPT"
-        },
-        {
-          "host": "192.168.1.0/24",
-          "proto": "tcp",
-          "port": "80",
           "action": "ACCEPT"
         }
       ]
