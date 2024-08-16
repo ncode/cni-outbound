@@ -1,4 +1,4 @@
-job "dig-job" {
+job "dig-outbound-job" {
   datacenters = ["dc1"]
 
   group "dig-group" {
@@ -35,9 +35,6 @@ job "dig-job" {
                   echo -e "$response" | socat TCP-LISTEN:$PORT,fork,reuseaddr -
               done
           ) &
-
-          # Store the subshell PID
-          busybox httpd -f -p $PORT -h "$TEMP_DIR" &
 
           # Main loop for DNS lookups
           while true; do

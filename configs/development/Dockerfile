@@ -2,7 +2,7 @@
 FROM oraclelinux:9
 
 # Set environment variables
-ENV NOMAD_VERSION=1.8.2
+ENV NOMAD_VERSION=1.8.3
 ENV CNI_PLUGINS_VERSION=v1.5.1
 ENV ARCH=arm64
 
@@ -12,6 +12,7 @@ RUN dnf update -y && \
     curl \
     unzip \
     socat \
+    nc \
     tcpdump \
     bind-utils \
     iproute \
