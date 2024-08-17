@@ -8,11 +8,13 @@ ENV ARCH=arm64
 
 # Install necessary packages
 RUN dnf update -y && \
+    dnf install -y oracle-epel-release-el9 && \
     dnf install -y \
     curl \
     unzip \
     socat \
     nc \
+    busybox \
     tcpdump \
     bind-utils \
     iproute \

@@ -169,7 +169,7 @@ Once the development environment is running:
    ```bash
    curl http://127.0.0.1:8080
    ```
-   This should return "Hello, World!", confirming that the NAT is working correctly and the job's HTTP server is accessible.
+   This should return the content of the queries gainst google dns, confirming that the NAT is working correctly and the job's HTTP server is accessible.
 
 4. Check the job logs in the Nomad UI. You should see:
    - Successful DNS queries to 8.8.8.8 (Google's primary DNS server)
@@ -181,11 +181,51 @@ This behavior demonstrates that the CNI Outbound Plugin is correctly applying th
 
 ## The cni-outbound-job
 
-The `cni-outbound-job.hcl` file defines a Nomad job that:
-- Sets up a simple HTTP server on port 8080
-- Performs periodic DNS lookups to 8.8.8.8 and 8.8.4.4
+The `cni-outbound-job.hcl` file defines a Nomad job named "dig-outbound-job" that:
 
-This job helps verify the CNI Outbound Plugin's functionality by demonstrating allowed and blocked outbound traffic.
+- Sets up a simple HTTP server using busybox httpd on port 8080
+- Performs periodic DNS lookups to 8.8.8.8 and 8.8.4.4
+- Writes the output of these DNS lookups to an HTML file served by the HTTP server
+
+Here are the key components of the job:
+
+1. **Network Configuration**:
+   - Uses the CNI network mode with "my-network" configuration
+   - Sets up a static port 8080
+
+2. **Task Configuration**:
+   - Uses the `exec` driver to run a bash script
+   - The script is defined inline using a template
+
+3. **Script Functionality**:
+   - Sets up a busybox httpd server on port 8080
+   - Creates a web root directory and an initial index.html file
+   - Performs DNS lookups in a loop:
+     - Queries google.com using 8.8.8.8 (Google's primary DNS)
+     - Queries google.com using 8.8.4.4 (Google's secondary DNS)
+   - Writes the output of these queries to the index.html file
+   - Sleeps for 60 seconds between lookups
+
+This job helps verify the CNI Outbound Plugin's functionality by demonstrating allowed and blocked outbound traffic. You can observe the results by:
+
+1. Accessing the HTTP server at `http://127.0.0.1:8080`
+2. Checking the job logs in the Nomad UI
+
+You should see:
+- Successful DNS queries to 8.8.8.8
+- Failed DNS queries to 8.8.4.4
+
+This behavior confirms that the CNI Outbound Plugin is correctly applying the outbound rules:
+- Allowing traffic to 8.8.8.8
+- Blocking traffic to 8.8.4.4
+
+To run this job:
+
+```bash
+NOMAD_ADDR=http://127.0.0.1:4646 nomad job run cni-outbound-job.hcl
+```
+
+After running the job, you can monitor its progress and results through the Nomad UI or by accessing the HTTP server it sets up.
 
 ## Network Troubleshooting
 

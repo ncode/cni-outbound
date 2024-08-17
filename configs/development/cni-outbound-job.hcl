@@ -25,16 +25,17 @@ job "dig-outbound-job" {
 
           # Define the port to listen on
           PORT=8080
+          WEBROOT="/tmp/webroot"
+          OUTPUTFILE="$WEBROOT/index.html"
 
-          # Create the HTTP response
-          response="HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nHello, World!"
+          # Ensure WEBROOT exists
+          mkdir -p $WEBROOT
 
-          # Start the socat HTTP server in a subshell
-          (
-              while true; do
-                  echo -e "$response" | socat TCP-LISTEN:$PORT,fork,reuseaddr -
-              done
-          ) &
+          # Ensure OUTPUTFILE exists and has initial content
+          echo "Initializing..." > $OUTPUTFILE
+
+          # Start the busybox httpd server
+          busybox httpd -f -p $PORT -h $WEBROOT &
 
           # Main loop for DNS lookups
           while true; do
@@ -44,7 +45,7 @@ job "dig-outbound-job" {
               echo "against 8.8.4.4"
               dig +short google.com @8.8.4.4
               sleep 60  # Wait for 60 seconds before next lookup
-          done
+          done > $OUTPUTFILE
         EOT
       }
 
