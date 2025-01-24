@@ -30,6 +30,12 @@ type PluginConf struct {
 	DefaultAction string                  `json:"defaultAction"`
 	OutboundRules []iptables.OutboundRule `json:"outboundRules"`
 	Logging       LogConfig               `json:"logging"`
+	Metadata      map[string]string       `json:"metadata"`
+}
+
+type argResults struct {
+	additionalRules []iptables.OutboundRule
+	metadata        map[string]string
 }
 
 var logger *slog.Logger
@@ -71,13 +77,16 @@ func generateChainName(netName, containerID string) string {
 	return utils.MustFormatChainNameWithPrefix(netName, containerID, "OUT-")
 }
 
-func parseAdditionalRules(args, containerID string) ([]iptables.OutboundRule, error) {
+func parseArgs(args, containerID string) ([]iptables.OutboundRule, map[string]string, error) {
 	logger.Log(context.Background(), slog.LevelInfo,
-		"Parsing additional rules from args",
+		"Parsing CNI arguments",
 		slog.String("component", "CNI-Outbound"),
 		slog.String("containerID", containerID),
 		slog.String("details", args),
 	)
+
+	metadata := make(map[string]string)
+	var additionalRules []iptables.OutboundRule
 
 	if args == "" {
 		logger.Log(context.Background(), slog.LevelInfo,
@@ -85,43 +94,55 @@ func parseAdditionalRules(args, containerID string) ([]iptables.OutboundRule, er
 			slog.String("component", "CNI-Outbound"),
 			slog.String("containerID", containerID),
 		)
-		return nil, nil // Return nil
+		return nil, metadata, nil
 	}
 
-	var additionalRules []iptables.OutboundRule // Initialize as nil
 	kvs := strings.Split(args, ";")
 	for _, kv := range kvs {
 		parts := strings.SplitN(kv, "=", 2)
-		if len(parts) != 2 || parts[0] != "outbound.additional_rules" {
+		if len(parts) != 2 {
 			continue
 		}
 
-		logger.Log(context.Background(), slog.LevelInfo,
-			"Found outbound.additional_rules",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", containerID),
-			slog.String("rules", parts[1]),
-		)
+		key, value := parts[0], parts[1]
 
-		if err := json.Unmarshal([]byte(parts[1]), &additionalRules); err != nil {
-			logger.Log(context.Background(), slog.LevelError,
-				"Failed to parse additional rules",
+		if key == "outbound.additional_rules" {
+			logger.Log(context.Background(), slog.LevelInfo,
+				"Found outbound.additional_rules",
 				slog.String("component", "CNI-Outbound"),
 				slog.String("containerID", containerID),
-				slog.Any("error", err),
+				slog.String("rules", value),
 			)
-			return nil, fmt.Errorf("failed to parse additional rules from CNI args: %v", err)
+
+			if err := json.Unmarshal([]byte(value), &additionalRules); err != nil {
+				logger.Log(context.Background(), slog.LevelError,
+					"Failed to parse additional rules",
+					slog.String("component", "CNI-Outbound"),
+					slog.String("containerID", containerID),
+					slog.Any("error", err),
+				)
+				return nil, nil, fmt.Errorf("failed to parse additional rules from CNI args: %v", err)
+			}
+		} else {
+			metadata[key] = value
+			logger.Log(context.Background(), slog.LevelInfo,
+				"Found metadata",
+				slog.String("component", "CNI-Outbound"),
+				slog.String("containerID", containerID),
+				slog.String("key", key),
+			)
 		}
-		break
 	}
 
 	logger.Log(context.Background(), slog.LevelInfo,
-		"Parsed additional rules",
+		"Parsed args",
 		slog.String("component", "CNI-Outbound"),
 		slog.String("containerID", containerID),
 		slog.Int("ruleCount", len(additionalRules)),
+		slog.Int("metadataCount", len(metadata)),
 	)
-	return additionalRules, nil
+
+	return additionalRules, metadata, nil
 }
 
 func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
@@ -165,7 +186,6 @@ func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 			return nil, fmt.Errorf("could not parse prevResult: %v", err)
 		}
 
-		// Convert prevResult to current.Result
 		result, err := current.NewResultFromResult(conf.PrevResult)
 		if err != nil {
 			logger.Log(context.Background(), slog.LevelError,
@@ -177,7 +197,6 @@ func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 			return nil, fmt.Errorf("failed to convert prevResult to current.Result: %v", err)
 		}
 
-		// Check for required fields
 		if len(result.Interfaces) == 0 {
 			return nil, fmt.Errorf("invalid prevResult structure: missing interfaces")
 		}
@@ -189,6 +208,36 @@ func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 		conf.PrevResult = result
 	}
 
+	// Parse additional rules and metadata from args
+	additionalRules, argsMetadata, err := parseArgs(args, containerID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Initialize metadata map only if we have metadata to add
+	if len(argsMetadata) > 0 && conf.Metadata == nil {
+		conf.Metadata = make(map[string]string)
+	}
+
+	// Add rules from args if any exist
+	if len(additionalRules) > 0 {
+		logger.Log(context.Background(), slog.LevelInfo,
+			"Appending additional rules",
+			slog.String("component", "CNI-Outbound"),
+			slog.String("containerID", containerID),
+			slog.Int("ruleCount", len(additionalRules)),
+		)
+		conf.OutboundRules = append(conf.OutboundRules, additionalRules...)
+	}
+
+	// Merge metadata from args only if we have metadata
+	if len(argsMetadata) > 0 {
+		for k, v := range argsMetadata {
+			conf.Metadata[k] = v
+		}
+	}
+
+	// Set defaults if needed
 	if conf.MainChainName == "" {
 		logger.Log(context.Background(), slog.LevelInfo,
 			"Using default MainChainName: CNI-OUTBOUND",
@@ -206,36 +255,6 @@ func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 		)
 		conf.DefaultAction = "DROP"
 	}
-
-	logger.Log(context.Background(), slog.LevelInfo,
-		"Base configuration",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", containerID),
-		slog.String("MainChainName", conf.MainChainName),
-		slog.String("DefaultAction", conf.DefaultAction),
-	)
-
-	// Parse and append additional rules from CNI args, if any
-	additionalRules, err := parseAdditionalRules(args, containerID)
-	if err != nil {
-		return nil, err
-	}
-	if len(additionalRules) > 0 {
-		logger.Log(context.Background(), slog.LevelInfo,
-			"Appending additional rules",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", containerID),
-			slog.Int("ruleCount", len(additionalRules)),
-		)
-		conf.OutboundRules = append(conf.OutboundRules, additionalRules...)
-	}
-
-	logger.Log(context.Background(), slog.LevelInfo,
-		"Total outbound rules",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", containerID),
-		slog.Int("totalRules", len(conf.OutboundRules)),
-	)
 
 	return &conf, nil
 }

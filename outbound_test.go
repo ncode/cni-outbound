@@ -7,8 +7,10 @@ import (
 	"github.com/ncode/cni-outbound/pkg/iptables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -265,6 +267,121 @@ func TestParseConfigPrevResultConversionError(t *testing.T) {
 	_, err := parseConfig([]byte(input), "", "test-container")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid IP address: A.A.A.A")
+}
+
+func TestParseConfigWithMetadata(t *testing.T) {
+	testCases := []struct {
+		name             string
+		input            string
+		args             string
+		expectedMetadata map[string]string
+		expectedRules    []iptables.OutboundRule
+		expectError      bool
+	}{
+		{
+			name: "Config metadata only",
+			input: `{
+                "cniVersion": "0.4.0",
+                "name": "test-net",
+                "type": "outbound",
+                "metadata": {
+                    "config_key": "config_value"
+                }
+            }`,
+			args: "",
+			expectedMetadata: map[string]string{
+				"config_key": "config_value",
+			},
+			expectedRules: nil,
+			expectError:   false,
+		},
+		{
+			name: "Args metadata only",
+			input: `{
+                "cniVersion": "0.4.0",
+                "name": "test-net",
+                "type": "outbound"
+            }`,
+			args: "arg_key=arg_value",
+			expectedMetadata: map[string]string{
+				"arg_key": "arg_value",
+			},
+			expectedRules: nil,
+			expectError:   false,
+		},
+		{
+			name: "Both metadata sources with override",
+			input: `{
+                "cniVersion": "0.4.0",
+                "name": "test-net",
+                "type": "outbound",
+                "metadata": {
+                    "config_key": "config_value",
+                    "override_key": "config_value"
+                }
+            }`,
+			args: "arg_key=arg_value;override_key=arg_value",
+			expectedMetadata: map[string]string{
+				"config_key":   "config_value",
+				"arg_key":      "arg_value",
+				"override_key": "arg_value",
+			},
+			expectedRules: nil,
+			expectError:   false,
+		},
+		{
+			name: "Metadata with rules",
+			input: `{
+                "cniVersion": "0.4.0",
+                "name": "test-net",
+                "type": "outbound",
+                "metadata": {
+                    "config_key": "config_value"
+                },
+                "outboundRules": [
+                    {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+                ]
+            }`,
+			args: `arg_key=arg_value;outbound.additional_rules=[{"host":"1.1.1.1","proto":"tcp","port":"80","action":"ACCEPT"}]`,
+			expectedMetadata: map[string]string{
+				"config_key": "config_value",
+				"arg_key":    "arg_value",
+			},
+			expectedRules: []iptables.OutboundRule{
+				{Host: "8.8.8.8", Proto: "udp", Port: "53", Action: "ACCEPT"},
+				{Host: "1.1.1.1", Proto: "tcp", Port: "80", Action: "ACCEPT"},
+			},
+			expectError: false,
+		},
+		{
+			name: "Invalid additional rules JSON",
+			input: `{
+                "cniVersion": "0.4.0",
+                "name": "test-net",
+                "type": "outbound"
+            }`,
+			args:        `arg_key=arg_value;outbound.additional_rules=[{"host":"1.1.1.1"`,
+			expectError: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := parseConfig([]byte(tc.input), tc.args, "test-container")
+
+			if tc.expectError {
+				assert.Error(t, err)
+				return
+			}
+
+			assert.NoError(t, err)
+			assert.Equal(t, tc.expectedMetadata, result.Metadata)
+
+			if tc.expectedRules != nil {
+				assert.Equal(t, tc.expectedRules, result.OutboundRules)
+			}
+		})
+	}
 }
 
 func TestParseConfigMissingInterfaces(t *testing.T) {
@@ -1385,7 +1502,7 @@ func TestParseAdditionalRules(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			rules, err := parseAdditionalRules(tc.args, "test-container")
+			rules, _, err := parseArgs(tc.args, "test-container")
 			if tc.expectedError {
 				assert.Error(t, err)
 			} else {
@@ -1395,6 +1512,80 @@ func TestParseAdditionalRules(t *testing.T) {
 				} else {
 					assert.Equal(t, tc.expectedRules, rules)
 				}
+			}
+		})
+	}
+}
+
+func TestParseArgsWithLogging(t *testing.T) {
+	// Setup logger for testing
+	var logBuffer strings.Builder
+	logger = slog.New(slog.NewTextHandler(&logBuffer, nil))
+
+	testCases := []struct {
+		name              string
+		args              string
+		expectedRules     []iptables.OutboundRule
+		expectedMetadata  map[string]string
+		expectError       bool
+		expectLogContains []string
+	}{
+		{
+			name:             "Empty args",
+			args:             "",
+			expectedRules:    nil,
+			expectedMetadata: map[string]string{},
+			expectError:      false,
+			expectLogContains: []string{
+				"No additional args provided",
+			},
+		},
+		{
+			name: "Valid metadata and rules",
+			args: `meta_key=meta_value;outbound.additional_rules=[{"host":"1.1.1.1","proto":"tcp","port":"80","action":"ACCEPT"}]`,
+			expectedRules: []iptables.OutboundRule{
+				{Host: "1.1.1.1", Proto: "tcp", Port: "80", Action: "ACCEPT"},
+			},
+			expectedMetadata: map[string]string{
+				"meta_key": "meta_value",
+			},
+			expectError: false,
+			expectLogContains: []string{
+				"Found metadata",
+				"Found outbound.additional_rules",
+				"Parsed args",
+			},
+		},
+		{
+			name:        "Invalid rules JSON",
+			args:        `meta_key=meta_value;outbound.additional_rules=[{"host":"1.1.1.1"`,
+			expectError: true,
+			expectLogContains: []string{
+				"Failed to parse additional rules",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			logBuffer.Reset()
+
+			rules, metadata, err := parseArgs(tc.args, "test-container")
+
+			if tc.expectError {
+				assert.Error(t, err)
+				if err != nil {
+					assert.Contains(t, err.Error(), "failed to parse additional rules from CNI args")
+				}
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tc.expectedRules, rules)
+				assert.Equal(t, tc.expectedMetadata, metadata)
+			}
+
+			logs := logBuffer.String()
+			for _, expectedLog := range tc.expectLogContains {
+				assert.Contains(t, logs, expectedLog)
 			}
 		})
 	}
