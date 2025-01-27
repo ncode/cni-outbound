@@ -45,9 +45,10 @@ type IPTablesManager struct {
 	ipt           IPTablesWrapper
 	mainChainName string
 	defaultAction string
+	dryRun        bool
 }
 
-func NewIPTablesManager(mainChainName, defaultAction string) (Manager, error) {
+func NewIPTablesManager(mainChainName, defaultAction string, dryRun bool) (Manager, error) {
 	ipt, err := newIPTables()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize iptables: %v", err)
@@ -65,6 +66,7 @@ func NewIPTablesManager(mainChainName, defaultAction string) (Manager, error) {
 		ipt:           ipt,
 		mainChainName: mainChainName,
 		defaultAction: defaultAction,
+		dryRun:        dryRun,
 	}, nil
 }
 
@@ -101,8 +103,24 @@ func (m *IPTablesManager) CreateContainerChain(containerChain string) error {
 		return fmt.Errorf("failed to add RELATED,ESTABLISHED rule: %v", err)
 	}
 
-	// Set the default action for the container chain
-	if err := m.ipt.Append("filter", containerChain, "-j", m.defaultAction); err != nil {
+	if m.dryRun {
+		// In dry-run mode, add a logging rule for anything that reaches the default action
+		logRuleSpec := []string{
+			"-j", "LOG",
+			"--log-prefix", fmt.Sprintf("[CNI-OUTBOUND-DEFAULT-%s] ", m.defaultAction),
+		}
+		if err := m.ipt.Append("filter", containerChain, logRuleSpec...); err != nil {
+			return fmt.Errorf("failed to add default action logging rule: %v", err)
+		}
+	}
+
+	// Set the default action - even in dry-run mode we'll ACCEPT everything after logging
+	defaultAction := "ACCEPT"
+	if !m.dryRun {
+		defaultAction = m.defaultAction
+	}
+
+	if err := m.ipt.Append("filter", containerChain, "-j", defaultAction); err != nil {
 		return fmt.Errorf("failed to set default action for container chain: %v", err)
 	}
 
@@ -110,7 +128,27 @@ func (m *IPTablesManager) CreateContainerChain(containerChain string) error {
 }
 
 func (m *IPTablesManager) AddRule(chainName string, rule OutboundRule) error {
-	ruleSpec := []string{"-d", rule.Host, "-p", rule.Proto, "--dport", rule.Port, "-j", rule.Action}
+	// Build basic rule specification
+	ruleSpec := []string{"-d", rule.Host, "-p", rule.Proto, "--dport", rule.Port}
+
+	if m.dryRun {
+		// Add logging rule
+		logRuleSpec := append([]string{}, ruleSpec...)
+		logRuleSpec = append(logRuleSpec,
+			"-j", "LOG",
+			"--log-prefix", fmt.Sprintf("[CNI-OUTBOUND-BLOCKED] "))
+
+		if err := m.ipt.Insert("filter", chainName, 1, logRuleSpec...); err != nil {
+			return fmt.Errorf("failed to add logging rule: %v", err)
+		}
+
+		// In dry-run mode, always ACCEPT after logging
+		ruleSpec = append(ruleSpec, "-j", "ACCEPT")
+	} else {
+		// Normal mode - use the specified action
+		ruleSpec = append(ruleSpec, "-j", rule.Action)
+	}
+
 	return m.ipt.Insert("filter", chainName, 1, ruleSpec...)
 }
 

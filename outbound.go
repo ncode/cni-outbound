@@ -33,10 +33,11 @@ type PluginConf struct {
 	OutboundRules []iptables.OutboundRule `json:"outboundRules"`
 	Logging       LogConfig               `json:"logging"`
 	Metadata      map[string]string       `json:"metadata"`
+	DryRun        bool                    `json:"dryRun"`
 }
 
 func getLogAttrs() slog.Attr {
-	attrs := []any{}
+	var attrs []any
 
 	if metadata != nil {
 		for k, v := range metadata {
@@ -50,7 +51,7 @@ func getLogAttrs() slog.Attr {
 var (
 	logger             = slog.New(slog.NewTextHandler(io.Discard, nil))
 	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
-		return iptables.NewIPTablesManager(conf.MainChainName, conf.DefaultAction)
+		return iptables.NewIPTablesManager(conf.MainChainName, conf.DefaultAction, conf.DryRun)
 	}
 	metadata = map[string]string{}
 )
@@ -183,6 +184,13 @@ func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 			slog.Any("error", err),
 		)
 		return nil, fmt.Errorf("failed to setup logging: %v", err)
+	}
+
+	if conf.DryRun {
+		logger.Log(context.Background(), slog.LevelInfo,
+			"Dry run mode enabled - traffic will be logged but not blocked",
+			getLogAttrs(),
+		)
 	}
 
 	logger.Log(context.Background(), slog.LevelInfo,

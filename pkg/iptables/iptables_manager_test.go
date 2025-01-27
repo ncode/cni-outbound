@@ -401,6 +401,7 @@ func TestNewIPTablesManager(t *testing.T) {
 		name           string
 		mainChainName  string
 		defaultAction  string
+		dryRun         bool
 		expectError    bool
 		errorSubstring string
 	}{
@@ -433,7 +434,7 @@ func TestNewIPTablesManager(t *testing.T) {
 			// Restore the original function after the test
 			defer func() { newIPTables = originalNewIPTables }()
 
-			managerInterface, err := NewIPTablesManager(tt.mainChainName, tt.defaultAction)
+			managerInterface, err := NewIPTablesManager(tt.mainChainName, tt.defaultAction, tt.dryRun)
 			manager := managerInterface.(*IPTablesManager)
 
 			if tt.expectError {
@@ -493,7 +494,7 @@ func TestNewIPTablesManagerError(t *testing.T) {
 	// Restore the original function after the test
 	defer func() { newIPTables = originalNewIPTables }()
 
-	_, err := NewIPTablesManager("TEST-CHAIN", "ACCEPT")
+	_, err := NewIPTablesManager("TEST-CHAIN", "ACCEPT", false)
 	if err == nil {
 		t.Error("Expected an error, but got nil")
 	}
