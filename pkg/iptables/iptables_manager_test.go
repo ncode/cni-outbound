@@ -3,6 +3,7 @@ package iptables
 import (
 	"errors"
 	"fmt"
+	"github.com/stretchr/testify/assert"
 	"strings"
 	"testing"
 
@@ -1085,12 +1086,149 @@ func TestRemoveJumpRuleByTargetChainDeleteError(t *testing.T) {
 	}
 }
 
+func TestVerifyRules(t *testing.T) {
+	testCases := []struct {
+		name          string
+		dryRun        bool
+		chainName     string
+		rules         []OutboundRule
+		existingRules []string
+		expectedError string
+	}{
+		{
+			name:      "Normal mode - rules exist",
+			dryRun:    false,
+			chainName: "TEST_CHAIN",
+			rules: []OutboundRule{
+				{Host: "192.168.1.1", Proto: "tcp", Port: "80", Action: "ACCEPT"},
+			},
+			existingRules: []string{
+				"-A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j ACCEPT",
+			},
+			expectedError: "",
+		},
+		{
+			name:      "Normal mode - rule missing",
+			dryRun:    false,
+			chainName: "TEST_CHAIN",
+			rules: []OutboundRule{
+				{Host: "192.168.1.1", Proto: "tcp", Port: "80", Action: "ACCEPT"},
+			},
+			existingRules: []string{
+				"-A TEST_CHAIN -d 192.168.1.2 -p tcp --dport 80 -j ACCEPT",
+			},
+			expectedError: "rule not found: -A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j ACCEPT",
+		},
+		{
+			name:      "Dry run mode - all rules exist",
+			dryRun:    true,
+			chainName: "TEST_CHAIN",
+			rules: []OutboundRule{
+				{Host: "192.168.1.1", Proto: "tcp", Port: "80", Action: "DROP"},
+			},
+			existingRules: []string{
+				"-A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j LOG --log-prefix [CNI-OUTBOUND-BLOCKED]",
+				"-A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j ACCEPT",
+				"-j LOG --log-prefix [CNI-OUTBOUND-DEFAULT-DROP]",
+				"-A TEST_CHAIN -j ACCEPT",
+			},
+			expectedError: "",
+		},
+		{
+			name:      "Dry run mode - missing logging rule",
+			dryRun:    true,
+			chainName: "TEST_CHAIN",
+			rules: []OutboundRule{
+				{Host: "192.168.1.1", Proto: "tcp", Port: "80", Action: "DROP"},
+			},
+			existingRules: []string{
+				"-A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j ACCEPT",
+				"-A TEST_CHAIN -j LOG --log-prefix [CNI-OUTBOUND-DEFAULT-DROP]",
+				"-A TEST_CHAIN -j ACCEPT",
+			},
+			expectedError: "logging rule not found: -A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j LOG",
+		},
+		{
+			name:      "Dry run mode - missing ACCEPT rule",
+			dryRun:    true,
+			chainName: "TEST_CHAIN",
+			rules: []OutboundRule{
+				{Host: "192.168.1.1", Proto: "tcp", Port: "80", Action: "DROP"},
+			},
+			existingRules: []string{
+				"-A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j LOG --log-prefix [CNI-OUTBOUND-BLOCKED]",
+				"-A TEST_CHAIN -j LOG --log-prefix [CNI-OUTBOUND-DEFAULT-DROP]",
+				"-A TEST_CHAIN -j ACCEPT",
+			},
+			expectedError: "ACCEPT rule not found: -A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j ACCEPT",
+		},
+		{
+			name:      "Dry run mode - missing default action logging rule",
+			dryRun:    true,
+			chainName: "TEST_CHAIN",
+			rules: []OutboundRule{
+				{Host: "192.168.1.1", Proto: "tcp", Port: "80", Action: "DROP"},
+			},
+			existingRules: []string{
+				"-A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j LOG --log-prefix [CNI-OUTBOUND-BLOCKED]",
+				"-A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j ACCEPT",
+				"-A TEST_CHAIN -j ACCEPT",
+			},
+			expectedError: "default action logging rule not found",
+		},
+		{
+			name:      "Dry run mode - multiple rules",
+			dryRun:    true,
+			chainName: "TEST_CHAIN",
+			rules: []OutboundRule{
+				{Host: "192.168.1.1", Proto: "tcp", Port: "80", Action: "ACCEPT"},
+				{Host: "192.168.1.2", Proto: "udp", Port: "53", Action: "DROP"},
+			},
+			existingRules: []string{
+				"-A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j LOG --log-prefix [CNI-OUTBOUND-ACCEPTED]",
+				"-A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j ACCEPT",
+				"-A TEST_CHAIN -d 192.168.1.2 -p udp --dport 53 -j LOG --log-prefix [CNI-OUTBOUND-BLOCKED]",
+				"-A TEST_CHAIN -d 192.168.1.2 -p udp --dport 53 -j ACCEPT",
+				"-A TEST_CHAIN -j LOG --log-prefix [CNI-OUTBOUND-DEFAULT-DROP]",
+				"-A TEST_CHAIN -j ACCEPT",
+			},
+			expectedError: "",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			mockIpt := &mockIPTables{
+				chains: map[string]bool{tc.chainName: true},
+				rules:  map[string][]string{tc.chainName: tc.existingRules},
+			}
+
+			manager := &IPTablesManager{
+				ipt:           mockIpt,
+				mainChainName: "CNI-OUTBOUND",
+				defaultAction: "DROP",
+				dryRun:        tc.dryRun,
+			}
+
+			err := manager.VerifyRules(tc.chainName, tc.rules)
+
+			if tc.expectedError == "" {
+				assert.NoError(t, err)
+			} else {
+				assert.Error(t, err)
+				assert.Equal(t, tc.expectedError, err.Error())
+			}
+		})
+	}
+}
+
 func TestVerifyRulesListError(t *testing.T) {
 	mockIpt := newMockIPTables()
 	manager := &IPTablesManager{
 		ipt:           mockIpt,
 		mainChainName: "CNI-OUTBOUND",
 		defaultAction: "DROP",
+		dryRun:        false,
 	}
 
 	// Set up the mock to return an error on List

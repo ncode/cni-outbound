@@ -238,10 +238,10 @@ func (m *IPTablesManager) VerifyRules(chainName string, rules []OutboundRule) er
 
 	// Verify default action logging rule in dry-run mode
 	if m.dryRun {
-		defaultLogRuleSpec := fmt.Sprintf("-j LOG.*%s", fmt.Sprintf("[CNI-OUTBOUND-DEFAULT-%s]", m.defaultAction))
+		logPrefix := fmt.Sprintf("[CNI-OUTBOUND-DEFAULT-%s]", m.defaultAction)
 		found := false
 		for _, existingRule := range existingRules {
-			if strings.Contains(existingRule, defaultLogRuleSpec) {
+			if strings.Contains(existingRule, "-j LOG") && strings.Contains(existingRule, logPrefix) {
 				found = true
 				break
 			}
