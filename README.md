@@ -145,6 +145,9 @@ Plugin-Specific Configuration Parameters:
 - `chainName`: Defines the name of the primary iptables chain. If not specified, it defaults to `"CNI-OUTBOUND"`.
 - `defaultAction`: Determines the default action (e.g., `"DROP"`, `"ACCEPT"`) for the container-specific chains. The default value is `"DROP"`.
 - `outboundRules`: An array of outbound rules that will be applied to each container.
+- `dryRun`: When set to `true`, all traffic will be logged but not blocked.
+- `logDrops`: When set to `true`, any dropped traffic will be logged via iptables.
+- `metadata`: A map of key-value pairs that will be included in log messages.
 - `logging`:
   - `enable`: A boolean value to enable (`true`) or disable (`false`) logging.
   - `directory`: Specifies the directory where log files will be stored.

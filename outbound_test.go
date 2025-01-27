@@ -1847,3 +1847,87 @@ func TestParseConfigComplete(t *testing.T) {
 		})
 	}
 }
+
+func TestParseConfig_LogDrops(t *testing.T) {
+	testCases := []struct {
+		name           string
+		stdin          []byte
+		args           string
+		expectError    bool
+		expectDryRun   bool
+		expectLogDrops bool
+	}{
+		{
+			name: "Config with dryRun and logDrops enabled",
+			stdin: []byte(`{
+				"cniVersion": "1.0.0",
+				"name": "test-net",
+				"type": "outbound",
+				"dryRun": true,
+				"logDrops": true,
+				"mainChainName": "TEST-OUTBOUND",
+				"defaultAction": "DROP"
+			}`),
+			args:           "",
+			expectDryRun:   true,
+			expectLogDrops: true,
+		},
+		{
+			name: "Config with only logDrops enabled",
+			stdin: []byte(`{
+				"cniVersion": "1.0.0",
+				"name": "test-net",
+				"type": "outbound",
+				"logDrops": true,
+				"mainChainName": "TEST-OUTBOUND",
+				"defaultAction": "DROP"
+			}`),
+			args:           "",
+			expectDryRun:   false,
+			expectLogDrops: true,
+		},
+		{
+			name: "Config with only dryRun enabled",
+			stdin: []byte(`{
+				"cniVersion": "1.0.0",
+				"name": "test-net",
+				"type": "outbound",
+				"dryRun": true,
+				"mainChainName": "TEST-OUTBOUND",
+				"defaultAction": "DROP"
+			}`),
+			args:           "",
+			expectDryRun:   true,
+			expectLogDrops: false,
+		},
+		{
+			name: "Config with both disabled",
+			stdin: []byte(`{
+				"cniVersion": "1.0.0",
+				"name": "test-net",
+				"type": "outbound",
+				"mainChainName": "TEST-OUTBOUND",
+				"defaultAction": "DROP"
+			}`),
+			args:           "",
+			expectDryRun:   false,
+			expectLogDrops: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			conf, err := parseConfig(tc.stdin, tc.args, "test-container")
+
+			if tc.expectError {
+				assert.Error(t, err)
+				return
+			}
+
+			assert.NoError(t, err)
+			assert.NotNil(t, conf)
+			assert.Equal(t, tc.expectDryRun, conf.DryRun)
+			assert.Equal(t, tc.expectLogDrops, conf.LogDrops)
+		})
+	}
+}
