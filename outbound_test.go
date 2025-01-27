@@ -1101,6 +1101,52 @@ func TestCmdCheck(t *testing.T) {
 	mockManager.AssertExpectations(t)
 }
 
+func TestCmdCheckWithMetadata(t *testing.T) {
+	// Stdin JSON includes some metadata
+	input := `{
+        "cniVersion": "0.4.0",
+        "name": "test-net",
+        "type": "outbound",
+        "mainChainName": "TEST-OUTBOUND",
+        "defaultAction": "ACCEPT",
+        "metadata": {
+           "test_key": "test_value"
+        },
+        "outboundRules": [
+            {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+        ]
+    }`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod", // More metadata
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	mockManager := new(MockIPTablesManager)
+	// Ensure main chain call
+	mockManager.On("ChainExists", "TEST-OUTBOUND").Return(true, nil)
+	// Container chain call
+	mockManager.On("ChainExists", mock.AnythingOfType("string")).Return(true, nil)
+	// Verify rules call
+	mockManager.On("VerifyRules", mock.Anything, mock.Anything).Return(nil)
+
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return mockManager, nil
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdCheck(args)
+	assert.NoError(t, err)
+
+	// This ensures the manager calls were made as expected
+	mockManager.AssertExpectations(t)
+}
+
 func TestCmdCheckNewIPTablesManagerFailure(t *testing.T) {
 	input := `{
 		"cniVersion": "0.4.0",
