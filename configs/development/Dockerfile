@@ -2,7 +2,7 @@
 FROM oraclelinux:9
 
 # Set environment variables
-ENV NOMAD_VERSION=1.8.3
+ENV NOMAD_VERSION=1.9.5
 ENV CNI_PLUGINS_VERSION=v1.5.1
 ENV ARCH=arm64
 

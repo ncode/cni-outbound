@@ -3,6 +3,7 @@ package iptables
 import (
 	"errors"
 	"fmt"
+	"github.com/stretchr/testify/assert"
 	"strings"
 	"testing"
 
@@ -14,6 +15,7 @@ type mockIPTables struct {
 	rules        map[string][]string
 	methodErrors map[string]error
 	appendFunc   func(table, chain string, rulespec ...string) error
+	insertFunc   func(table, chain string, pos int, rulespec ...string) error
 }
 
 func newMockIPTables() *mockIPTables {
@@ -78,6 +80,9 @@ func (m *mockIPTables) Append(table, chain string, rulespec ...string) error {
 }
 
 func (m *mockIPTables) Insert(table, chain string, pos int, rulespec ...string) error {
+	if m.insertFunc != nil {
+		return m.insertFunc(table, chain, pos, rulespec...)
+	}
 	if err := m.methodErrors["Insert"]; err != nil {
 		return err
 	}
@@ -118,10 +123,6 @@ func (m *mockIPTables) SetError(method string, err error) {
 // Helper method to clear errors
 func (m *mockIPTables) ClearErrors() {
 	m.methodErrors = make(map[string]error)
-}
-
-func joinRule(chain string, rulespec []string) string {
-	return "-A " + chain + " " + strings.Join(rulespec, " ")
 }
 
 func TestIPTablesManager(t *testing.T) {
@@ -241,6 +242,82 @@ func TestIPTablesManager(t *testing.T) {
 		// Check if the rule was inserted at the beginning of the chain
 		if len(rules) > 1 && strings.Contains(rules[1], expectedRule) {
 			t.Error("Rule was not inserted at the beginning of the chain")
+		}
+	})
+
+	t.Run("AddRuleWithDryRun", func(t *testing.T) {
+		testCases := []struct {
+			name           string
+			rule           OutboundRule
+			expectedPrefix string
+		}{
+			{
+				name: "DROP rule",
+				rule: OutboundRule{
+					Host:   "192.168.1.1",
+					Proto:  "tcp",
+					Port:   "80",
+					Action: "DROP",
+				},
+				expectedPrefix: "[CNI-OUTBOUND-BLOCKED]",
+			},
+			{
+				name: "ACCEPT rule",
+				rule: OutboundRule{
+					Host:   "192.168.1.1",
+					Proto:  "tcp",
+					Port:   "80",
+					Action: "ACCEPT",
+				},
+				expectedPrefix: "[CNI-OUTBOUND-ACCEPTED]",
+			},
+		}
+
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				mockIpt := newMockIPTables()
+				manager := &IPTablesManager{
+					ipt:           mockIpt,
+					mainChainName: "CNI-OUTBOUND",
+					defaultAction: "DROP",
+					dryRun:        true,
+				}
+
+				chainName := "TEST_CHAIN"
+				mockIpt.chains[chainName] = true // Ensure the chain exists
+
+				err := manager.AddRule(chainName, tc.rule)
+				if err != nil {
+					t.Fatalf("AddRule failed: %v", err)
+				}
+
+				// Check if rules were added to the chain
+				rules := mockIpt.rules[chainName]
+				if len(rules) != 2 {
+					t.Fatalf("Expected 2 rules (log and accept), got %d", len(rules))
+				}
+
+				// Check log rule
+				expectedLogRule := fmt.Sprintf("-d %s -p %s --dport %s -j LOG",
+					tc.rule.Host, tc.rule.Proto, tc.rule.Port)
+				if !strings.Contains(rules[0], expectedLogRule) {
+					t.Errorf("Log rule mismatch. Expected: %s, Got: %s", expectedLogRule, rules[0])
+				}
+
+				// Check prefix in log rule
+				if !strings.Contains(rules[0], tc.expectedPrefix) {
+					t.Errorf("Log rule has wrong prefix. Expected: %s, Got: %s",
+						tc.expectedPrefix, rules[0])
+				}
+
+				// Check accept rule
+				expectedAcceptRule := fmt.Sprintf("-d %s -p %s --dport %s -j ACCEPT",
+					tc.rule.Host, tc.rule.Proto, tc.rule.Port)
+				if !strings.Contains(rules[1], expectedAcceptRule) {
+					t.Errorf("Accept rule mismatch. Expected: %s, Got: %s",
+						expectedAcceptRule, rules[1])
+				}
+			})
 		}
 	})
 
@@ -401,6 +478,7 @@ func TestNewIPTablesManager(t *testing.T) {
 		name           string
 		mainChainName  string
 		defaultAction  string
+		dryRun         bool
 		expectError    bool
 		errorSubstring string
 	}{
@@ -408,18 +486,42 @@ func TestNewIPTablesManager(t *testing.T) {
 			name:          "Valid initialization",
 			mainChainName: "CNI-OUTBOUND",
 			defaultAction: "DROP",
+			dryRun:        false,
+			expectError:   false,
+		},
+		{
+			name:          "Valid initialization with dry-run",
+			mainChainName: "CNI-OUTBOUND",
+			defaultAction: "DROP",
+			dryRun:        true,
 			expectError:   false,
 		},
 		{
 			name:          "Empty main chain name",
 			mainChainName: "",
 			defaultAction: "DROP",
+			dryRun:        false,
+			expectError:   false,
+		},
+		{
+			name:          "Empty main chain name with dry-run",
+			mainChainName: "",
+			defaultAction: "DROP",
+			dryRun:        true,
 			expectError:   false,
 		},
 		{
 			name:          "Empty default action",
 			mainChainName: "CNI-OUTBOUND",
 			defaultAction: "",
+			dryRun:        false,
+			expectError:   false,
+		},
+		{
+			name:          "Empty default action with dry-run",
+			mainChainName: "CNI-OUTBOUND",
+			defaultAction: "",
+			dryRun:        true,
 			expectError:   false,
 		},
 	}
@@ -433,7 +535,7 @@ func TestNewIPTablesManager(t *testing.T) {
 			// Restore the original function after the test
 			defer func() { newIPTables = originalNewIPTables }()
 
-			managerInterface, err := NewIPTablesManager(tt.mainChainName, tt.defaultAction)
+			managerInterface, err := NewIPTablesManager(tt.mainChainName, tt.defaultAction, tt.dryRun)
 			manager := managerInterface.(*IPTablesManager)
 
 			if tt.expectError {
@@ -469,6 +571,11 @@ func TestNewIPTablesManager(t *testing.T) {
 					t.Errorf("Expected defaultAction to be '%s', but got '%s'", expectedDefaultAction, manager.defaultAction)
 				}
 
+				// Check if dryRun is set correctly
+				if manager.dryRun != tt.dryRun {
+					t.Errorf("Expected dryRun to be '%v', but got '%v'", tt.dryRun, manager.dryRun)
+				}
+
 				// Check if the iptables instance is initialized
 				if manager.ipt == nil {
 					t.Errorf("Expected ipt to be initialized, but it's nil")
@@ -493,7 +600,7 @@ func TestNewIPTablesManagerError(t *testing.T) {
 	// Restore the original function after the test
 	defer func() { newIPTables = originalNewIPTables }()
 
-	_, err := NewIPTablesManager("TEST-CHAIN", "ACCEPT")
+	_, err := NewIPTablesManager("TEST-CHAIN", "ACCEPT", false)
 	if err == nil {
 		t.Error("Expected an error, but got nil")
 	}
@@ -983,12 +1090,149 @@ func TestRemoveJumpRuleByTargetChainDeleteError(t *testing.T) {
 	}
 }
 
+func TestVerifyRules(t *testing.T) {
+	testCases := []struct {
+		name          string
+		dryRun        bool
+		chainName     string
+		rules         []OutboundRule
+		existingRules []string
+		expectedError string
+	}{
+		{
+			name:      "Normal mode - rules exist",
+			dryRun:    false,
+			chainName: "TEST_CHAIN",
+			rules: []OutboundRule{
+				{Host: "192.168.1.1", Proto: "tcp", Port: "80", Action: "ACCEPT"},
+			},
+			existingRules: []string{
+				"-A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j ACCEPT",
+			},
+			expectedError: "",
+		},
+		{
+			name:      "Normal mode - rule missing",
+			dryRun:    false,
+			chainName: "TEST_CHAIN",
+			rules: []OutboundRule{
+				{Host: "192.168.1.1", Proto: "tcp", Port: "80", Action: "ACCEPT"},
+			},
+			existingRules: []string{
+				"-A TEST_CHAIN -d 192.168.1.2 -p tcp --dport 80 -j ACCEPT",
+			},
+			expectedError: "rule not found: -A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j ACCEPT",
+		},
+		{
+			name:      "Dry run mode - all rules exist",
+			dryRun:    true,
+			chainName: "TEST_CHAIN",
+			rules: []OutboundRule{
+				{Host: "192.168.1.1", Proto: "tcp", Port: "80", Action: "DROP"},
+			},
+			existingRules: []string{
+				"-A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j LOG --log-prefix [CNI-OUTBOUND-BLOCKED]",
+				"-A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j ACCEPT",
+				"-j LOG --log-prefix [CNI-OUTBOUND-DEFAULT-DROP]",
+				"-A TEST_CHAIN -j ACCEPT",
+			},
+			expectedError: "",
+		},
+		{
+			name:      "Dry run mode - missing logging rule",
+			dryRun:    true,
+			chainName: "TEST_CHAIN",
+			rules: []OutboundRule{
+				{Host: "192.168.1.1", Proto: "tcp", Port: "80", Action: "DROP"},
+			},
+			existingRules: []string{
+				"-A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j ACCEPT",
+				"-A TEST_CHAIN -j LOG --log-prefix [CNI-OUTBOUND-DEFAULT-DROP]",
+				"-A TEST_CHAIN -j ACCEPT",
+			},
+			expectedError: "logging rule not found: -A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j LOG",
+		},
+		{
+			name:      "Dry run mode - missing ACCEPT rule",
+			dryRun:    true,
+			chainName: "TEST_CHAIN",
+			rules: []OutboundRule{
+				{Host: "192.168.1.1", Proto: "tcp", Port: "80", Action: "DROP"},
+			},
+			existingRules: []string{
+				"-A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j LOG --log-prefix [CNI-OUTBOUND-BLOCKED]",
+				"-A TEST_CHAIN -j LOG --log-prefix [CNI-OUTBOUND-DEFAULT-DROP]",
+				"-A TEST_CHAIN -j ACCEPT",
+			},
+			expectedError: "ACCEPT rule not found: -A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j ACCEPT",
+		},
+		{
+			name:      "Dry run mode - missing default action logging rule",
+			dryRun:    true,
+			chainName: "TEST_CHAIN",
+			rules: []OutboundRule{
+				{Host: "192.168.1.1", Proto: "tcp", Port: "80", Action: "DROP"},
+			},
+			existingRules: []string{
+				"-A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j LOG --log-prefix [CNI-OUTBOUND-BLOCKED]",
+				"-A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j ACCEPT",
+				"-A TEST_CHAIN -j ACCEPT",
+			},
+			expectedError: "default action logging rule not found",
+		},
+		{
+			name:      "Dry run mode - multiple rules",
+			dryRun:    true,
+			chainName: "TEST_CHAIN",
+			rules: []OutboundRule{
+				{Host: "192.168.1.1", Proto: "tcp", Port: "80", Action: "ACCEPT"},
+				{Host: "192.168.1.2", Proto: "udp", Port: "53", Action: "DROP"},
+			},
+			existingRules: []string{
+				"-A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j LOG --log-prefix [CNI-OUTBOUND-ACCEPTED]",
+				"-A TEST_CHAIN -d 192.168.1.1 -p tcp --dport 80 -j ACCEPT",
+				"-A TEST_CHAIN -d 192.168.1.2 -p udp --dport 53 -j LOG --log-prefix [CNI-OUTBOUND-BLOCKED]",
+				"-A TEST_CHAIN -d 192.168.1.2 -p udp --dport 53 -j ACCEPT",
+				"-A TEST_CHAIN -j LOG --log-prefix [CNI-OUTBOUND-DEFAULT-DROP]",
+				"-A TEST_CHAIN -j ACCEPT",
+			},
+			expectedError: "",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			mockIpt := &mockIPTables{
+				chains: map[string]bool{tc.chainName: true},
+				rules:  map[string][]string{tc.chainName: tc.existingRules},
+			}
+
+			manager := &IPTablesManager{
+				ipt:           mockIpt,
+				mainChainName: "CNI-OUTBOUND",
+				defaultAction: "DROP",
+				dryRun:        tc.dryRun,
+			}
+
+			err := manager.VerifyRules(tc.chainName, tc.rules)
+
+			if tc.expectedError == "" {
+				assert.NoError(t, err)
+			} else {
+				assert.Error(t, err)
+				assert.Equal(t, tc.expectedError, err.Error())
+			}
+		})
+	}
+}
+
 func TestVerifyRulesListError(t *testing.T) {
 	mockIpt := newMockIPTables()
 	manager := &IPTablesManager{
 		ipt:           mockIpt,
 		mainChainName: "CNI-OUTBOUND",
 		defaultAction: "DROP",
+		dryRun:        false,
 	}
 
 	// Set up the mock to return an error on List
@@ -1006,7 +1250,7 @@ func TestVerifyRulesListError(t *testing.T) {
 		t.Fatal("Expected an error, but got nil")
 	}
 
-	if err != expectedError {
+	if err.Error() != expectedError.Error() {
 		t.Errorf("Expected error '%v', but got: %v", expectedError, err)
 	}
 }
@@ -1015,12 +1259,14 @@ func TestClearAndDeleteChain(t *testing.T) {
 	tests := []struct {
 		name          string
 		chainName     string
+		dryRun        bool
 		setupMock     func(*mockIPTables)
 		expectedError string
 	}{
 		{
 			name:      "Successful clear and delete",
 			chainName: "TEST_CHAIN",
+			dryRun:    false,
 			setupMock: func(m *mockIPTables) {
 				m.chains["TEST_CHAIN"] = true
 				m.rules["TEST_CHAIN"] = []string{"some rule"}
@@ -1028,8 +1274,34 @@ func TestClearAndDeleteChain(t *testing.T) {
 			expectedError: "",
 		},
 		{
+			name:      "Successful clear and delete with dry-run",
+			chainName: "TEST_CHAIN",
+			dryRun:    true,
+			setupMock: func(m *mockIPTables) {
+				m.chains["TEST_CHAIN"] = true
+				m.rules["TEST_CHAIN"] = []string{
+					"-d 192.168.1.1 -p tcp --dport 80 -j LOG --log-prefix [CNI-OUTBOUND-BLOCKED]",
+					"-d 192.168.1.1 -p tcp --dport 80 -j ACCEPT",
+					"-j LOG --log-prefix [CNI-OUTBOUND-DEFAULT-DROP]",
+					"-j ACCEPT",
+				}
+			},
+			expectedError: "",
+		},
+		{
 			name:      "Error on clear",
 			chainName: "ERROR_CLEAR_CHAIN",
+			dryRun:    false,
+			setupMock: func(m *mockIPTables) {
+				m.chains["ERROR_CLEAR_CHAIN"] = true
+				m.SetError("ClearChain", errors.New("mock clear error"))
+			},
+			expectedError: "failed to clear chain ERROR_CLEAR_CHAIN: mock clear error",
+		},
+		{
+			name:      "Error on clear with dry-run",
+			chainName: "ERROR_CLEAR_CHAIN",
+			dryRun:    true,
 			setupMock: func(m *mockIPTables) {
 				m.chains["ERROR_CLEAR_CHAIN"] = true
 				m.SetError("ClearChain", errors.New("mock clear error"))
@@ -1039,6 +1311,17 @@ func TestClearAndDeleteChain(t *testing.T) {
 		{
 			name:      "Error on delete",
 			chainName: "ERROR_DELETE_CHAIN",
+			dryRun:    false,
+			setupMock: func(m *mockIPTables) {
+				m.chains["ERROR_DELETE_CHAIN"] = true
+				m.SetError("DeleteChain", errors.New("mock delete error"))
+			},
+			expectedError: "failed to delete chain ERROR_DELETE_CHAIN: mock delete error",
+		},
+		{
+			name:      "Error on delete with dry-run",
+			chainName: "ERROR_DELETE_CHAIN",
+			dryRun:    true,
 			setupMock: func(m *mockIPTables) {
 				m.chains["ERROR_DELETE_CHAIN"] = true
 				m.SetError("DeleteChain", errors.New("mock delete error"))
@@ -1056,6 +1339,7 @@ func TestClearAndDeleteChain(t *testing.T) {
 				ipt:           mockIpt,
 				mainChainName: "CNI-OUTBOUND",
 				defaultAction: "DROP",
+				dryRun:        tt.dryRun,
 			}
 
 			err := manager.ClearAndDeleteChain(tt.chainName)
@@ -1068,7 +1352,7 @@ func TestClearAndDeleteChain(t *testing.T) {
 				if mockIpt.chains[tt.chainName] {
 					t.Error("Chain was not deleted")
 				}
-				// Verify rules were cleared
+				// Verify rules were cleared (including logging rules for dry-run)
 				if rules, exists := mockIpt.rules[tt.chainName]; exists && len(rules) > 0 {
 					t.Error("Rules were not cleared")
 				}
@@ -1078,6 +1362,180 @@ func TestClearAndDeleteChain(t *testing.T) {
 				} else if err.Error() != tt.expectedError {
 					t.Errorf("Expected error '%s', but got: %v", tt.expectedError, err)
 				}
+			}
+		})
+	}
+}
+
+func TestCreateContainerChainDryRun(t *testing.T) {
+	testCases := []struct {
+		name          string
+		dryRun        bool
+		defaultAction string
+		mockSetup     func(*mockIPTables)
+		expectedRules []string
+		expectError   bool
+		errorString   string
+	}{
+		{
+			name:          "Dry run mode - successful creation",
+			dryRun:        true,
+			defaultAction: "DROP",
+			mockSetup:     nil,
+			expectedRules: []string{
+				"-m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+				"-j LOG --log-prefix [CNI-OUTBOUND-DEFAULT-DROP]",
+				"-j ACCEPT",
+			},
+			expectError: false,
+		},
+		{
+			name:          "Dry run mode - logging rule append failure",
+			dryRun:        true,
+			defaultAction: "DROP",
+			mockSetup: func(m *mockIPTables) {
+				callCount := 0
+				m.appendFunc = func(table, chain string, rulespec ...string) error {
+					callCount++
+					if callCount == 2 && strings.Contains(strings.Join(rulespec, " "), "-j LOG") {
+						return fmt.Errorf("mock logging rule error")
+					}
+					rule := strings.Join(rulespec, " ")
+					if m.rules[chain] == nil {
+						m.rules[chain] = []string{}
+					}
+					m.rules[chain] = append(m.rules[chain], rule)
+					return nil
+				}
+			},
+			expectError: true,
+			errorString: "failed to add default action logging rule: mock logging rule error",
+		},
+		{
+			name:          "Normal mode - successful creation",
+			dryRun:        false,
+			defaultAction: "DROP",
+			mockSetup:     nil,
+			expectedRules: []string{
+				"-m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+				"-j DROP",
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			mockIpt := newMockIPTables()
+			if tc.mockSetup != nil {
+				tc.mockSetup(mockIpt)
+			}
+
+			manager := &IPTablesManager{
+				ipt:           mockIpt,
+				mainChainName: "CNI-OUTBOUND",
+				defaultAction: tc.defaultAction,
+				dryRun:        tc.dryRun,
+			}
+
+			err := manager.CreateContainerChain("TEST-CHAIN")
+
+			if tc.expectError {
+				assert.Error(t, err)
+				if tc.errorString != "" {
+					assert.Equal(t, tc.errorString, err.Error())
+				}
+				return
+			}
+
+			assert.NoError(t, err)
+			assert.True(t, mockIpt.chains["TEST-CHAIN"])
+
+			rules := mockIpt.rules["TEST-CHAIN"]
+			assert.Equal(t, len(tc.expectedRules), len(rules), "Expected %d rules, got %d", len(tc.expectedRules), len(rules))
+
+			for i, expectedRule := range tc.expectedRules {
+				assert.Contains(t, rules[i], expectedRule, "Rule %d doesn't match expected", i)
+			}
+		})
+	}
+}
+
+func TestAddRuleLoggingError(t *testing.T) {
+	testCases := []struct {
+		name          string
+		rule          OutboundRule
+		mockSetup     func(*mockIPTables)
+		expectedError string
+	}{
+		{
+			name: "Dry run mode - logging rule insertion failure",
+			rule: OutboundRule{
+				Host:   "192.168.1.1",
+				Proto:  "tcp",
+				Port:   "80",
+				Action: "DROP",
+			},
+			mockSetup: func(m *mockIPTables) {
+				// Mock Insert to fail on logging rule
+				m.methodErrors["Insert"] = fmt.Errorf("mock logging rule insertion error")
+			},
+			expectedError: "failed to add logging rule: mock logging rule insertion error",
+		},
+		{
+			name: "Dry run mode - logging rule insertion success but action rule failure",
+			rule: OutboundRule{
+				Host:   "192.168.1.1",
+				Proto:  "tcp",
+				Port:   "80",
+				Action: "DROP",
+			},
+			mockSetup: func(m *mockIPTables) {
+				callCount := 0
+				m.insertFunc = func(table, chain string, pos int, rulespec ...string) error {
+					callCount++
+					if callCount == 1 {
+						// Let the logging rule succeed
+						rule := strings.Join(rulespec, " ")
+						if m.rules[chain] == nil {
+							m.rules[chain] = []string{}
+						}
+						m.rules[chain] = append(m.rules[chain], rule)
+						return nil
+					}
+					// Make the action rule fail
+					return fmt.Errorf("mock action rule error")
+				}
+			},
+			expectedError: "mock action rule error",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			mockIpt := newMockIPTables()
+			if tc.mockSetup != nil {
+				tc.mockSetup(mockIpt)
+			}
+
+			manager := &IPTablesManager{
+				ipt:           mockIpt,
+				mainChainName: "CNI-OUTBOUND",
+				defaultAction: "DROP",
+				dryRun:        true,
+			}
+
+			err := manager.AddRule("TEST-CHAIN", tc.rule)
+
+			assert.Error(t, err)
+			assert.Equal(t, tc.expectedError, err.Error())
+
+			// For the second test case, verify the logging rule was added before the error
+			if strings.Contains(tc.name, "success but action rule failure") {
+				rules := mockIpt.rules["TEST-CHAIN"]
+				assert.Equal(t, 1, len(rules))
+				assert.Contains(t, rules[0], "-j LOG")
+				assert.Contains(t, rules[0], "[CNI-OUTBOUND-BLOCKED]")
 			}
 		})
 	}

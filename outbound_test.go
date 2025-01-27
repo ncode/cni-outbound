@@ -7,8 +7,10 @@ import (
 	"github.com/ncode/cni-outbound/pkg/iptables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -265,6 +267,121 @@ func TestParseConfigPrevResultConversionError(t *testing.T) {
 	_, err := parseConfig([]byte(input), "", "test-container")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid IP address: A.A.A.A")
+}
+
+func TestParseConfigWithMetadata(t *testing.T) {
+	testCases := []struct {
+		name             string
+		input            string
+		args             string
+		expectedMetadata map[string]string
+		expectedRules    []iptables.OutboundRule
+		expectError      bool
+	}{
+		{
+			name: "Config metadata only",
+			input: `{
+                "cniVersion": "0.4.0",
+                "name": "test-net",
+                "type": "outbound",
+                "metadata": {
+                    "config_key": "config_value"
+                }
+            }`,
+			args: "",
+			expectedMetadata: map[string]string{
+				"config_key": "config_value",
+			},
+			expectedRules: nil,
+			expectError:   false,
+		},
+		{
+			name: "Args metadata only",
+			input: `{
+                "cniVersion": "0.4.0",
+                "name": "test-net",
+                "type": "outbound"
+            }`,
+			args: "arg_key=arg_value",
+			expectedMetadata: map[string]string{
+				"arg_key": "arg_value",
+			},
+			expectedRules: nil,
+			expectError:   false,
+		},
+		{
+			name: "Both metadata sources with override",
+			input: `{
+                "cniVersion": "0.4.0",
+                "name": "test-net",
+                "type": "outbound",
+                "metadata": {
+                    "config_key": "config_value",
+                    "override_key": "config_value"
+                }
+            }`,
+			args: "arg_key=arg_value;override_key=arg_value",
+			expectedMetadata: map[string]string{
+				"config_key":   "config_value",
+				"arg_key":      "arg_value",
+				"override_key": "arg_value",
+			},
+			expectedRules: nil,
+			expectError:   false,
+		},
+		{
+			name: "Metadata with rules",
+			input: `{
+                "cniVersion": "0.4.0",
+                "name": "test-net",
+                "type": "outbound",
+                "metadata": {
+                    "config_key": "config_value"
+                },
+                "outboundRules": [
+                    {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+                ]
+            }`,
+			args: `arg_key=arg_value;outbound.additional_rules=[{"host":"1.1.1.1","proto":"tcp","port":"80","action":"ACCEPT"}]`,
+			expectedMetadata: map[string]string{
+				"config_key": "config_value",
+				"arg_key":    "arg_value",
+			},
+			expectedRules: []iptables.OutboundRule{
+				{Host: "8.8.8.8", Proto: "udp", Port: "53", Action: "ACCEPT"},
+				{Host: "1.1.1.1", Proto: "tcp", Port: "80", Action: "ACCEPT"},
+			},
+			expectError: false,
+		},
+		{
+			name: "Invalid additional rules JSON",
+			input: `{
+                "cniVersion": "0.4.0",
+                "name": "test-net",
+                "type": "outbound"
+            }`,
+			args:        `arg_key=arg_value;outbound.additional_rules=[{"host":"1.1.1.1"`,
+			expectError: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := parseConfig([]byte(tc.input), tc.args, "test-container")
+
+			if tc.expectError {
+				assert.Error(t, err)
+				return
+			}
+
+			assert.NoError(t, err)
+			assert.Equal(t, tc.expectedMetadata, result.Metadata)
+
+			if tc.expectedRules != nil {
+				assert.Equal(t, tc.expectedRules, result.OutboundRules)
+			}
+		})
+	}
 }
 
 func TestParseConfigMissingInterfaces(t *testing.T) {
@@ -984,6 +1101,52 @@ func TestCmdCheck(t *testing.T) {
 	mockManager.AssertExpectations(t)
 }
 
+func TestCmdCheckWithMetadata(t *testing.T) {
+	// Stdin JSON includes some metadata
+	input := `{
+        "cniVersion": "0.4.0",
+        "name": "test-net",
+        "type": "outbound",
+        "mainChainName": "TEST-OUTBOUND",
+        "defaultAction": "ACCEPT",
+        "metadata": {
+           "test_key": "test_value"
+        },
+        "outboundRules": [
+            {"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+        ]
+    }`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "K8S_POD_NAMESPACE=test;K8S_POD_NAME=test-pod", // More metadata
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(input),
+	}
+
+	mockManager := new(MockIPTablesManager)
+	// Ensure main chain call
+	mockManager.On("ChainExists", "TEST-OUTBOUND").Return(true, nil)
+	// Container chain call
+	mockManager.On("ChainExists", mock.AnythingOfType("string")).Return(true, nil)
+	// Verify rules call
+	mockManager.On("VerifyRules", mock.Anything, mock.Anything).Return(nil)
+
+	origNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return mockManager, nil
+	}
+	defer func() { newIPTablesManager = origNewIPTablesManager }()
+
+	err := cmdCheck(args)
+	assert.NoError(t, err)
+
+	// This ensures the manager calls were made as expected
+	mockManager.AssertExpectations(t)
+}
+
 func TestCmdCheckNewIPTablesManagerFailure(t *testing.T) {
 	input := `{
 		"cniVersion": "0.4.0",
@@ -1287,69 +1450,76 @@ func TestSetupLogging(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	testCases := []struct {
-		name          string
-		config        LogConfig
-		expectedDir   string
-		expectedError bool
+		name        string
+		config      LogConfig
+		setup       func() error
+		expectError bool
+		validate    func(t *testing.T, err error)
 	}{
 		{
 			name: "Logging disabled",
 			config: LogConfig{
 				Enable: false,
 			},
-			expectedDir:   "",
-			expectedError: false,
+			expectError: false,
+			validate: func(t *testing.T, err error) {
+				assert.NoError(t, err)
+				assert.NotNil(t, logger)
+			},
 		},
 		{
-			name: "Logging enabled with custom directory",
+			name: "Custom directory",
 			config: LogConfig{
 				Enable:    true,
-				Directory: filepath.Join(tempDir, "custom"),
+				Directory: filepath.Join(tempDir, "logs"),
 			},
-			expectedDir:   filepath.Join(tempDir, "custom"),
-			expectedError: false,
+			setup: func() error {
+				return os.MkdirAll(filepath.Join(tempDir, "logs"), 0755)
+			},
+			expectError: false,
+			validate: func(t *testing.T, err error) {
+				assert.NoError(t, err)
+				assert.NotNil(t, logger)
+			},
 		},
 		{
-			name: "Logging enabled with empty directory and fail with lack of permission without root",
+			name: "Permission error",
 			config: LogConfig{
 				Enable:    true,
-				Directory: "",
+				Directory: "/root/noaccess",
 			},
-			expectedDir:   "/var/log/cni",
-			expectedError: true,
+			expectError: true,
+			validate: func(t *testing.T, err error) {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "failed to open log file")
+			},
+		},
+		{
+			name: "Default directory without permissions",
+			config: LogConfig{
+				Enable: true,
+			},
+			expectError: true,
+			validate: func(t *testing.T, err error) {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "failed to open log file")
+			},
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.setup != nil {
+				err := tc.setup()
+				assert.NoError(t, err)
+			}
+
 			conf := &PluginConf{
 				Logging: tc.config,
 			}
 
-			if tc.config.Enable && tc.config.Directory != "" {
-				err := os.MkdirAll(tc.config.Directory, 0755)
-				if err != nil {
-					t.Fatalf("Failed to create directory: %v", err)
-				}
-			}
-
 			err := setupLogging(conf)
-
-			if tc.expectedError {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, tc.expectedDir, conf.Logging.Directory)
-
-				if tc.config.Enable {
-					assert.NotNil(t, logger)
-					if tc.config.Directory == "" {
-						assert.Equal(t, "/var/log/cni", conf.Logging.Directory)
-					}
-				} else {
-					assert.NotNil(t, logger)
-				}
-			}
+			tc.validate(t, err)
 		})
 	}
 }
@@ -1385,7 +1555,7 @@ func TestParseAdditionalRules(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			rules, err := parseAdditionalRules(tc.args, "test-container")
+			rules, _, err := parseArgs(tc.args, "test-container")
 			if tc.expectedError {
 				assert.Error(t, err)
 			} else {
@@ -1400,8 +1570,280 @@ func TestParseAdditionalRules(t *testing.T) {
 	}
 }
 
+func TestParseArgsWithLogging(t *testing.T) {
+	// Setup logger for testing
+	var logBuffer strings.Builder
+	logger = slog.New(slog.NewTextHandler(&logBuffer, nil))
+
+	testCases := []struct {
+		name              string
+		args              string
+		expectedRules     []iptables.OutboundRule
+		expectedMetadata  map[string]string
+		expectError       bool
+		expectLogContains []string
+	}{
+		{
+			name:             "Empty args",
+			args:             "",
+			expectedRules:    nil,
+			expectedMetadata: map[string]string{},
+			expectError:      false,
+			expectLogContains: []string{
+				"No additional args provided",
+			},
+		},
+		{
+			name: "Valid metadata and rules",
+			args: `meta_key=meta_value;outbound.additional_rules=[{"host":"1.1.1.1","proto":"tcp","port":"80","action":"ACCEPT"}]`,
+			expectedRules: []iptables.OutboundRule{
+				{Host: "1.1.1.1", Proto: "tcp", Port: "80", Action: "ACCEPT"},
+			},
+			expectedMetadata: map[string]string{
+				"meta_key": "meta_value",
+			},
+			expectError: false,
+			expectLogContains: []string{
+				"Found metadata",
+				"Found outbound.additional_rules",
+				"Parsed args",
+			},
+		},
+		{
+			name:        "Invalid rules JSON",
+			args:        `meta_key=meta_value;outbound.additional_rules=[{"host":"1.1.1.1"`,
+			expectError: true,
+			expectLogContains: []string{
+				"Failed to parse additional rules",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			logBuffer.Reset()
+
+			rules, metadata, err := parseArgs(tc.args, "test-container")
+
+			if tc.expectError {
+				assert.Error(t, err)
+				if err != nil {
+					assert.Contains(t, err.Error(), "failed to parse additional rules from CNI args")
+				}
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tc.expectedRules, rules)
+				assert.Equal(t, tc.expectedMetadata, metadata)
+			}
+
+			logs := logBuffer.String()
+			for _, expectedLog := range tc.expectLogContains {
+				assert.Contains(t, logs, expectedLog)
+			}
+		})
+	}
+}
+
 func TestGenerateChainName(t *testing.T) {
 	chainName := generateChainName("test-net", "test-container")
 	assert.NotEmpty(t, chainName)
 	assert.Contains(t, chainName, "OUT-")
+}
+
+func TestParseArgs(t *testing.T) {
+	testCases := []struct {
+		name          string
+		args          string
+		expectedRules []iptables.OutboundRule
+		expectedMeta  map[string]string
+		expectError   bool
+	}{
+		{
+			name:          "Empty args",
+			args:          "",
+			expectedRules: nil,
+			expectedMeta:  map[string]string{},
+			expectError:   false,
+		},
+		{
+			name: "Additional rules only",
+			args: `outbound.additional_rules=[{"host":"1.1.1.1","proto":"tcp","port":"80","action":"ACCEPT"}]`,
+			expectedRules: []iptables.OutboundRule{
+				{Host: "1.1.1.1", Proto: "tcp", Port: "80", Action: "ACCEPT"},
+			},
+			expectedMeta: map[string]string{},
+			expectError:  false,
+		},
+		{
+			name:          "Metadata only",
+			args:          "K8S_POD_NAME=test-pod;K8S_POD_NAMESPACE=default",
+			expectedRules: nil,
+			expectedMeta: map[string]string{
+				"K8S_POD_NAME":      "test-pod",
+				"K8S_POD_NAMESPACE": "default",
+			},
+			expectError: false,
+		},
+		{
+			name: "Both rules and metadata",
+			args: `outbound.additional_rules=[{"host":"1.1.1.1","proto":"tcp","port":"80","action":"ACCEPT"}];K8S_POD_NAME=test-pod`,
+			expectedRules: []iptables.OutboundRule{
+				{Host: "1.1.1.1", Proto: "tcp", Port: "80", Action: "ACCEPT"},
+			},
+			expectedMeta: map[string]string{
+				"K8S_POD_NAME": "test-pod",
+			},
+			expectError: false,
+		},
+		{
+			name:        "Invalid additional rules JSON",
+			args:        `outbound.additional_rules=[invalid-json]`,
+			expectError: true,
+		},
+		{
+			name:          "Skip CNI env vars",
+			args:          "CNI_COMMAND=ADD;K8S_POD_NAME=test-pod",
+			expectedRules: nil,
+			expectedMeta: map[string]string{
+				"K8S_POD_NAME": "test-pod",
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			rules, meta, err := parseArgs(tc.args, "test-container")
+
+			if tc.expectError {
+				assert.Error(t, err)
+				return
+			}
+
+			assert.NoError(t, err)
+			assert.Equal(t, tc.expectedRules, rules)
+			assert.Equal(t, tc.expectedMeta, meta)
+		})
+	}
+}
+
+func TestGetLogAttrs(t *testing.T) {
+	testCases := []struct {
+		name     string
+		metadata map[string]string
+		check    func(t *testing.T, attr slog.Attr)
+	}{
+		{
+			name:     "Empty metadata",
+			metadata: nil,
+			check: func(t *testing.T, attr slog.Attr) {
+				assert.Equal(t, "metadata", attr.Key)
+				group := attr.Value.Group()
+				assert.Empty(t, group)
+			},
+		},
+		{
+			name: "With metadata",
+			metadata: map[string]string{
+				"key1": "value1",
+				"key2": "value2",
+			},
+			check: func(t *testing.T, attr slog.Attr) {
+				assert.Equal(t, "metadata", attr.Key)
+				group := attr.Value.Group()
+				assert.Len(t, group, 2)
+
+				values := make(map[string]string)
+				for _, a := range group {
+					values[a.Key] = a.Value.String()
+				}
+
+				assert.Equal(t, "value1", values["key1"])
+				assert.Equal(t, "value2", values["key2"])
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			metadata = tc.metadata
+			attr := getLogAttrs()
+			tc.check(t, attr)
+		})
+	}
+}
+
+func TestParseConfigComplete(t *testing.T) {
+	testCases := []struct {
+		name       string
+		stdin      []byte
+		args       string
+		expectFunc func(*testing.T, *PluginConf, error)
+	}{
+		{
+			name: "Full configuration with metadata",
+			stdin: []byte(`{
+				"cniVersion": "1.0.0",
+				"name": "test-net",
+				"type": "outbound",
+				"mainChainName": "TEST-OUTBOUND",
+				"defaultAction": "DROP",
+				"dryRun": true,
+				"outboundRules": [
+					{"host": "8.8.8.8", "proto": "udp", "port": "53", "action": "ACCEPT"}
+				],
+				"logging": {
+					"enable": false
+				},
+				"metadata": {
+					"base": "config"
+				}
+			}`),
+			args: "K8S_POD_NAME=test-pod;outbound.additional_rules=[{\"host\":\"1.1.1.1\",\"proto\":\"tcp\",\"port\":\"80\",\"action\":\"ACCEPT\"}]",
+			expectFunc: func(t *testing.T, conf *PluginConf, err error) {
+				assert.NoError(t, err)
+				assert.NotNil(t, conf)
+				assert.Equal(t, "TEST-OUTBOUND", conf.MainChainName)
+				assert.Equal(t, "DROP", conf.DefaultAction)
+				assert.True(t, conf.DryRun)
+				assert.Len(t, conf.OutboundRules, 2)
+				assert.Equal(t, "config", conf.Metadata["base"])
+				assert.Equal(t, "test-pod", conf.Metadata["K8S_POD_NAME"])
+			},
+		},
+		{
+			name: "Minimal configuration",
+			stdin: []byte(`{
+				"cniVersion": "1.0.0",
+				"name": "test-net",
+				"type": "outbound"
+			}`),
+			args: "",
+			expectFunc: func(t *testing.T, conf *PluginConf, err error) {
+				assert.NoError(t, err)
+				assert.NotNil(t, conf)
+				assert.Equal(t, "CNI-OUTBOUND", conf.MainChainName)
+				assert.Equal(t, "DROP", conf.DefaultAction)
+				assert.False(t, conf.DryRun)
+				assert.Empty(t, conf.OutboundRules)
+				assert.Nil(t, conf.Metadata)
+			},
+		},
+		{
+			name:  "Invalid JSON",
+			stdin: []byte(`{invalid}`),
+			args:  "",
+			expectFunc: func(t *testing.T, conf *PluginConf, err error) {
+				assert.Error(t, err)
+				assert.Nil(t, conf)
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			conf, err := parseConfig(tc.stdin, tc.args, "test-container")
+			tc.expectFunc(t, conf, err)
+		})
+	}
 }
