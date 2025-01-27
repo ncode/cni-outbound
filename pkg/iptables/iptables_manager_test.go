@@ -120,10 +120,6 @@ func (m *mockIPTables) ClearErrors() {
 	m.methodErrors = make(map[string]error)
 }
 
-func joinRule(chain string, rulespec []string) string {
-	return "-A " + chain + " " + strings.Join(rulespec, " ")
-}
-
 func TestIPTablesManager(t *testing.T) {
 	mockIpt := newMockIPTables()
 	manager := &IPTablesManager{
@@ -241,6 +237,55 @@ func TestIPTablesManager(t *testing.T) {
 		// Check if the rule was inserted at the beginning of the chain
 		if len(rules) > 1 && strings.Contains(rules[1], expectedRule) {
 			t.Error("Rule was not inserted at the beginning of the chain")
+		}
+	})
+
+	t.Run("AddRuleWithDryRun", func(t *testing.T) {
+		mockIpt := newMockIPTables()
+		manager := &IPTablesManager{
+			ipt:           mockIpt,
+			mainChainName: "CNI-OUTBOUND",
+			defaultAction: "DROP",
+			dryRun:        true,
+		}
+
+		chainName := "TEST_CHAIN"
+		mockIpt.chains[chainName] = true // Ensure the chain exists
+
+		rule := OutboundRule{Host: "192.168.1.1", Proto: "tcp", Port: "80", Action: "DROP"}
+		err := manager.AddRule(chainName, rule)
+		if err != nil {
+			t.Fatalf("AddRule failed: %v", err)
+		}
+
+		// Check if rules were added to the chain
+		rules := mockIpt.rules[chainName]
+		if len(rules) != 2 {
+			t.Fatalf("Expected 2 rules (log and accept), got %d", len(rules))
+		}
+
+		// Check log rule
+		expectedLogRule := "-d 192.168.1.1 -p tcp --dport 80 -j LOG"
+		if !strings.Contains(rules[0], expectedLogRule) {
+			t.Errorf("Log rule mismatch. Expected: %s, Got: %s", expectedLogRule, rules[0])
+		}
+
+		// Check prefix in log rule
+		if !strings.Contains(rules[0], "[CNI-OUTBOUND-BLOCKED]") {
+			t.Error("Log rule missing expected prefix [CNI-OUTBOUND-BLOCKED]")
+		}
+
+		// Check accept rule
+		expectedAcceptRule := "-d 192.168.1.1 -p tcp --dport 80 -j ACCEPT"
+		if !strings.Contains(rules[1], expectedAcceptRule) {
+			t.Errorf("Accept rule mismatch. Expected: %s, Got: %s", expectedAcceptRule, rules[1])
+		}
+
+		// Check rules were inserted in correct order
+		if len(rules) > 2 {
+			if strings.Contains(rules[2], expectedLogRule) || strings.Contains(rules[2], expectedAcceptRule) {
+				t.Error("Rules were not inserted at the beginning of the chain")
+			}
 		}
 	})
 
@@ -409,18 +454,42 @@ func TestNewIPTablesManager(t *testing.T) {
 			name:          "Valid initialization",
 			mainChainName: "CNI-OUTBOUND",
 			defaultAction: "DROP",
+			dryRun:        false,
+			expectError:   false,
+		},
+		{
+			name:          "Valid initialization with dry-run",
+			mainChainName: "CNI-OUTBOUND",
+			defaultAction: "DROP",
+			dryRun:        true,
 			expectError:   false,
 		},
 		{
 			name:          "Empty main chain name",
 			mainChainName: "",
 			defaultAction: "DROP",
+			dryRun:        false,
+			expectError:   false,
+		},
+		{
+			name:          "Empty main chain name with dry-run",
+			mainChainName: "",
+			defaultAction: "DROP",
+			dryRun:        true,
 			expectError:   false,
 		},
 		{
 			name:          "Empty default action",
 			mainChainName: "CNI-OUTBOUND",
 			defaultAction: "",
+			dryRun:        false,
+			expectError:   false,
+		},
+		{
+			name:          "Empty default action with dry-run",
+			mainChainName: "CNI-OUTBOUND",
+			defaultAction: "",
+			dryRun:        true,
 			expectError:   false,
 		},
 	}
@@ -468,6 +537,11 @@ func TestNewIPTablesManager(t *testing.T) {
 				}
 				if manager.defaultAction != expectedDefaultAction {
 					t.Errorf("Expected defaultAction to be '%s', but got '%s'", expectedDefaultAction, manager.defaultAction)
+				}
+
+				// Check if dryRun is set correctly
+				if manager.dryRun != tt.dryRun {
+					t.Errorf("Expected dryRun to be '%v', but got '%v'", tt.dryRun, manager.dryRun)
 				}
 
 				// Check if the iptables instance is initialized
@@ -1007,7 +1081,7 @@ func TestVerifyRulesListError(t *testing.T) {
 		t.Fatal("Expected an error, but got nil")
 	}
 
-	if err != expectedError {
+	if err.Error() != expectedError.Error() {
 		t.Errorf("Expected error '%v', but got: %v", expectedError, err)
 	}
 }
@@ -1016,12 +1090,14 @@ func TestClearAndDeleteChain(t *testing.T) {
 	tests := []struct {
 		name          string
 		chainName     string
+		dryRun        bool
 		setupMock     func(*mockIPTables)
 		expectedError string
 	}{
 		{
 			name:      "Successful clear and delete",
 			chainName: "TEST_CHAIN",
+			dryRun:    false,
 			setupMock: func(m *mockIPTables) {
 				m.chains["TEST_CHAIN"] = true
 				m.rules["TEST_CHAIN"] = []string{"some rule"}
@@ -1029,8 +1105,34 @@ func TestClearAndDeleteChain(t *testing.T) {
 			expectedError: "",
 		},
 		{
+			name:      "Successful clear and delete with dry-run",
+			chainName: "TEST_CHAIN",
+			dryRun:    true,
+			setupMock: func(m *mockIPTables) {
+				m.chains["TEST_CHAIN"] = true
+				m.rules["TEST_CHAIN"] = []string{
+					"-d 192.168.1.1 -p tcp --dport 80 -j LOG --log-prefix [CNI-OUTBOUND-BLOCKED]",
+					"-d 192.168.1.1 -p tcp --dport 80 -j ACCEPT",
+					"-j LOG --log-prefix [CNI-OUTBOUND-DEFAULT-DROP]",
+					"-j ACCEPT",
+				}
+			},
+			expectedError: "",
+		},
+		{
 			name:      "Error on clear",
 			chainName: "ERROR_CLEAR_CHAIN",
+			dryRun:    false,
+			setupMock: func(m *mockIPTables) {
+				m.chains["ERROR_CLEAR_CHAIN"] = true
+				m.SetError("ClearChain", errors.New("mock clear error"))
+			},
+			expectedError: "failed to clear chain ERROR_CLEAR_CHAIN: mock clear error",
+		},
+		{
+			name:      "Error on clear with dry-run",
+			chainName: "ERROR_CLEAR_CHAIN",
+			dryRun:    true,
 			setupMock: func(m *mockIPTables) {
 				m.chains["ERROR_CLEAR_CHAIN"] = true
 				m.SetError("ClearChain", errors.New("mock clear error"))
@@ -1040,6 +1142,17 @@ func TestClearAndDeleteChain(t *testing.T) {
 		{
 			name:      "Error on delete",
 			chainName: "ERROR_DELETE_CHAIN",
+			dryRun:    false,
+			setupMock: func(m *mockIPTables) {
+				m.chains["ERROR_DELETE_CHAIN"] = true
+				m.SetError("DeleteChain", errors.New("mock delete error"))
+			},
+			expectedError: "failed to delete chain ERROR_DELETE_CHAIN: mock delete error",
+		},
+		{
+			name:      "Error on delete with dry-run",
+			chainName: "ERROR_DELETE_CHAIN",
+			dryRun:    true,
 			setupMock: func(m *mockIPTables) {
 				m.chains["ERROR_DELETE_CHAIN"] = true
 				m.SetError("DeleteChain", errors.New("mock delete error"))
@@ -1057,6 +1170,7 @@ func TestClearAndDeleteChain(t *testing.T) {
 				ipt:           mockIpt,
 				mainChainName: "CNI-OUTBOUND",
 				defaultAction: "DROP",
+				dryRun:        tt.dryRun,
 			}
 
 			err := manager.ClearAndDeleteChain(tt.chainName)
@@ -1069,7 +1183,7 @@ func TestClearAndDeleteChain(t *testing.T) {
 				if mockIpt.chains[tt.chainName] {
 					t.Error("Chain was not deleted")
 				}
-				// Verify rules were cleared
+				// Verify rules were cleared (including logging rules for dry-run)
 				if rules, exists := mockIpt.rules[tt.chainName]; exists && len(rules) > 0 {
 					t.Error("Rules were not cleared")
 				}

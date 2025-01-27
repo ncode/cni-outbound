@@ -185,16 +185,62 @@ func (m *IPTablesManager) VerifyRules(chainName string, rules []OutboundRule) er
 	}
 
 	for _, rule := range rules {
-		ruleSpec := fmt.Sprintf("-A %s -d %s -p %s --dport %s -j %s", chainName, rule.Host, rule.Proto, rule.Port, rule.Action)
+		ruleSpec := fmt.Sprintf("-A %s -d %s -p %s --dport %s", chainName, rule.Host, rule.Proto, rule.Port)
+
+		if m.dryRun {
+			// Check for logging rule
+			logRuleSpec := ruleSpec + " -j LOG"
+			found := false
+			for _, existingRule := range existingRules {
+				if strings.Contains(existingRule, logRuleSpec) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("logging rule not found: %s", logRuleSpec)
+			}
+
+			// Check for ACCEPT rule
+			acceptRuleSpec := ruleSpec + " -j ACCEPT"
+			found = false
+			for _, existingRule := range existingRules {
+				if strings.Contains(existingRule, acceptRuleSpec) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("ACCEPT rule not found: %s", acceptRuleSpec)
+			}
+		} else {
+			// Original rule verification
+			ruleSpec = ruleSpec + fmt.Sprintf(" -j %s", rule.Action)
+			found := false
+			for _, existingRule := range existingRules {
+				if strings.Contains(existingRule, ruleSpec) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("rule not found: %s", ruleSpec)
+			}
+		}
+	}
+
+	// Verify default action logging rule in dry-run mode
+	if m.dryRun {
+		defaultLogRuleSpec := fmt.Sprintf("-j LOG.*%s", fmt.Sprintf("[CNI-OUTBOUND-DEFAULT-%s]", m.defaultAction))
 		found := false
 		for _, existingRule := range existingRules {
-			if strings.Contains(existingRule, ruleSpec) {
+			if strings.Contains(existingRule, defaultLogRuleSpec) {
 				found = true
 				break
 			}
 		}
 		if !found {
-			return fmt.Errorf("rule not found: %s", ruleSpec)
+			return fmt.Errorf("default action logging rule not found")
 		}
 	}
 
