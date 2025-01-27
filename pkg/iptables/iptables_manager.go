@@ -46,9 +46,10 @@ type IPTablesManager struct {
 	mainChainName string
 	defaultAction string
 	dryRun        bool
+	logDrops      bool
 }
 
-func NewIPTablesManager(mainChainName, defaultAction string, dryRun bool) (Manager, error) {
+func NewIPTablesManager(mainChainName, defaultAction string, dryRun, logDrops bool) (Manager, error) {
 	ipt, err := newIPTables()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize iptables: %v", err)
@@ -67,6 +68,7 @@ func NewIPTablesManager(mainChainName, defaultAction string, dryRun bool) (Manag
 		mainChainName: mainChainName,
 		defaultAction: defaultAction,
 		dryRun:        dryRun,
+		logDrops:      logDrops,
 	}, nil
 }
 
@@ -107,7 +109,7 @@ func (m *IPTablesManager) CreateContainerChain(containerChain string) error {
 		// In dry-run mode, add a logging rule for anything that reaches the default action
 		logRuleSpec := []string{
 			"-j", "LOG",
-			"--log-prefix", fmt.Sprintf("[CNI-OUTBOUND-DEFAULT-%s] ", m.defaultAction),
+			"--log-prefix", fmt.Sprintf(`"[CNI-OUTBOUND-%s-%s]"`, containerChain, m.defaultAction),
 		}
 		if err := m.ipt.Append("filter", containerChain, logRuleSpec...); err != nil {
 			return fmt.Errorf("failed to add default action logging rule: %v", err)
@@ -127,36 +129,46 @@ func (m *IPTablesManager) CreateContainerChain(containerChain string) error {
 	return nil
 }
 
-func (m *IPTablesManager) AddRule(chainName string, rule OutboundRule) error {
-	// Build basic rule specification
-	ruleSpec := []string{"-d", rule.Host, "-p", rule.Proto, "--dport", rule.Port}
+// buildRuleSpecs returns one or more rules to insert into the chain.
+// Each returned element is a slice of strings representing the iptables arguments.
+func (m *IPTablesManager) buildRuleSpecs(chainName, host, proto, port, action string) [][]string {
+	// Base rule spec
+	baseSpec := []string{"-d", host, "-p", proto, "--dport", port}
 
+	// If dry-run => Always log + then ACCEPT
 	if m.dryRun {
-		// Add logging rule with prefix based on original action
-		logRuleSpec := append([]string{}, ruleSpec...)
-		var logPrefix string
-		if rule.Action == "DROP" {
-			logPrefix = "[CNI-OUTBOUND-BLOCKED]"
-		} else {
-			logPrefix = "[CNI-OUTBOUND-ACCEPTED]"
+		return [][]string{
+			append(append([]string{}, baseSpec...), "-j", "LOG", "--log-prefix", fmt.Sprintf(`"[CNI-OUTBOUND-%s-ACCEPTED]"`, chainName)),
+			append(append([]string{}, baseSpec...), "-j", "ACCEPT"),
 		}
-
-		logRuleSpec = append(logRuleSpec,
-			"-j", "LOG",
-			"--log-prefix", logPrefix)
-
-		if err := m.ipt.Insert("filter", chainName, 1, logRuleSpec...); err != nil {
-			return fmt.Errorf("failed to add logging rule: %v", err)
-		}
-
-		// In dry-run mode, always ACCEPT after logging
-		ruleSpec = append(ruleSpec, "-j", "ACCEPT")
-	} else {
-		// Normal mode - use the specified action
-		ruleSpec = append(ruleSpec, "-j", rule.Action)
 	}
 
-	return m.ipt.Insert("filter", chainName, 1, ruleSpec...)
+	// Normal mode. If this is a drop and logDrops == true => log + then drop
+	if m.logDrops && strings.EqualFold(action, "DROP") {
+		return [][]string{
+			append(append([]string{}, baseSpec...), "-j", "LOG", "--log-prefix", fmt.Sprintf(`"[CNI-OUTBOUND-%s-BLOCKED]"`, chainName)),
+			append(append([]string{}, baseSpec...), "-j", "DROP"),
+		}
+	}
+
+	// Otherwise, just a single final rule: -j <action>
+	return [][]string{
+		append(append([]string{}, baseSpec...), "-j", action),
+	}
+}
+
+func (m *IPTablesManager) AddRule(chainName string, rule OutboundRule) error {
+	ruleSpecs := m.buildRuleSpecs(chainName, rule.Host, rule.Proto, rule.Port, rule.Action)
+
+	// Add rules in reverse order so they end up in the correct order
+	// (since we're using Insert at position 1 each time)
+	for i := len(ruleSpecs) - 1; i >= 0; i-- {
+		if err := m.ipt.Insert("filter", chainName, 1, ruleSpecs[i]...); err != nil {
+			return fmt.Errorf("failed to add rule: %v", err)
+		}
+	}
+
+	return nil
 }
 
 func (m *IPTablesManager) AddJumpRule(sourceIP, targetChain string) error {
@@ -185,63 +197,51 @@ func (m *IPTablesManager) ChainExists(chainName string) (bool, error) {
 	return m.ipt.ChainExists("filter", chainName)
 }
 
+// buildExpectedRuleLines constructs the strings we'll search for in `iptables -S <chain>` output.
+func (m *IPTablesManager) buildExpectedRuleLines(chainName string, host, proto, port, action string) []string {
+	var lines []string
+	ruleSets := m.buildRuleSpecs(chainName, host, proto, port, action)
+
+	// iptables -S lines typically look like:
+	//   -A <chainName> -d <host> -p <proto> --dport <port> -j <ACTION> ...
+	// We'll create lines that we can search with strings.Contains().
+	for _, rs := range ruleSets {
+		// Start with `-A chainName` then the rest:
+		line := "-A " + chainName + " " + strings.Join(rs, " ")
+		lines = append(lines, line)
+	}
+	return lines
+}
+
 func (m *IPTablesManager) VerifyRules(chainName string, rules []OutboundRule) error {
 	existingRules, err := m.ipt.List("filter", chainName)
 	if err != nil {
 		return err
 	}
 
+	// Verify each OutboundRule
 	for _, rule := range rules {
-		ruleSpec := fmt.Sprintf("-A %s -d %s -p %s --dport %s", chainName, rule.Host, rule.Proto, rule.Port)
-
-		if m.dryRun {
-			// Check for logging rule
-			logRuleSpec := ruleSpec + " -j LOG"
+		expectedLines := m.buildExpectedRuleLines(chainName, rule.Host, rule.Proto, rule.Port, rule.Action)
+		for _, expectedLine := range expectedLines {
 			found := false
 			for _, existingRule := range existingRules {
-				if strings.Contains(existingRule, logRuleSpec) {
+				if strings.Contains(existingRule, expectedLine) {
 					found = true
 					break
 				}
 			}
 			if !found {
-				return fmt.Errorf("logging rule not found: %s", logRuleSpec)
-			}
-
-			// Check for ACCEPT rule
-			acceptRuleSpec := ruleSpec + " -j ACCEPT"
-			found = false
-			for _, existingRule := range existingRules {
-				if strings.Contains(existingRule, acceptRuleSpec) {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return fmt.Errorf("ACCEPT rule not found: %s", acceptRuleSpec)
-			}
-		} else {
-			// Original rule verification
-			ruleSpec = ruleSpec + fmt.Sprintf(" -j %s", rule.Action)
-			found := false
-			for _, existingRule := range existingRules {
-				if strings.Contains(existingRule, ruleSpec) {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return fmt.Errorf("rule not found: %s", ruleSpec)
+				return fmt.Errorf("rule not found: %s", expectedLine)
 			}
 		}
 	}
 
 	// Verify default action logging rule in dry-run mode
 	if m.dryRun {
-		logPrefix := fmt.Sprintf("[CNI-OUTBOUND-DEFAULT-%s]", m.defaultAction)
+		defaultLogLine := fmt.Sprintf("-A %s -j LOG --log-prefix [CNI-OUTBOUND-DEFAULT-%s]", chainName, m.defaultAction)
 		found := false
 		for _, existingRule := range existingRules {
-			if strings.Contains(existingRule, "-j LOG") && strings.Contains(existingRule, logPrefix) {
+			if strings.Contains(existingRule, defaultLogLine) {
 				found = true
 				break
 			}

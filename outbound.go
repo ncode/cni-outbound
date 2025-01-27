@@ -34,6 +34,7 @@ type PluginConf struct {
 	Logging       LogConfig               `json:"logging"`
 	Metadata      map[string]string       `json:"metadata"`
 	DryRun        bool                    `json:"dryRun"`
+	LogDrops      bool                    `json:"logDrops"`
 }
 
 func getLogAttrs() slog.Attr {
@@ -51,7 +52,7 @@ func getLogAttrs() slog.Attr {
 var (
 	logger             = slog.New(slog.NewTextHandler(io.Discard, nil))
 	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
-		return iptables.NewIPTablesManager(conf.MainChainName, conf.DefaultAction, conf.DryRun)
+		return iptables.NewIPTablesManager(conf.MainChainName, conf.DefaultAction, conf.DryRun, conf.LogDrops)
 	}
 	metadata = map[string]string{}
 )
