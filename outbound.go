@@ -4,6 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
+	"maps"
+	"os"
+	"strings"
+	"time"
+
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
 	current "github.com/containernetworking/cni/pkg/types/100"
@@ -11,11 +18,6 @@ import (
 	"github.com/containernetworking/plugins/pkg/utils"
 	bv "github.com/containernetworking/plugins/pkg/utils/buildversion"
 	"github.com/ncode/cni-outbound/pkg/iptables"
-	"io"
-	"log/slog"
-	"os"
-	"strings"
-	"time"
 )
 
 type LogConfig struct {
@@ -33,20 +35,28 @@ type PluginConf struct {
 	Metadata      map[string]string       `json:"metadata"`
 }
 
-type argResults struct {
-	additionalRules []iptables.OutboundRule
-	metadata        map[string]string
+func getLogAttrs() slog.Attr {
+	attrs := []any{}
+
+	if metadata != nil {
+		for k, v := range metadata {
+			attrs = append(attrs, slog.String(k, v))
+		}
+	}
+
+	return slog.Group("metadata", attrs...)
 }
 
-var logger *slog.Logger
-
-var newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
-	return iptables.NewIPTablesManager(conf.MainChainName, conf.DefaultAction)
-}
+var (
+	logger             = slog.New(slog.NewTextHandler(io.Discard, nil))
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return iptables.NewIPTablesManager(conf.MainChainName, conf.DefaultAction)
+	}
+	metadata = map[string]string{}
+)
 
 func setupLogging(conf *PluginConf) error {
 	if !conf.Logging.Enable {
-		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 		return nil
 	}
 
@@ -80,8 +90,7 @@ func generateChainName(netName, containerID string) string {
 func parseArgs(args, containerID string) ([]iptables.OutboundRule, map[string]string, error) {
 	logger.Log(context.Background(), slog.LevelInfo,
 		"Parsing CNI arguments",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", containerID),
+		getLogAttrs(),
 		slog.String("details", args),
 	)
 
@@ -91,10 +100,17 @@ func parseArgs(args, containerID string) ([]iptables.OutboundRule, map[string]st
 	if args == "" {
 		logger.Log(context.Background(), slog.LevelInfo,
 			"No additional args provided",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", containerID),
+			getLogAttrs(),
 		)
 		return nil, metadata, nil
+	}
+
+	// Skip CNI env vars that are already available in skel.CmdArgs
+	skipKeys := map[string]bool{
+		"CNI_COMMAND":     true,
+		"CNI_CONTAINERID": true,
+		"CNI_PATH":        true,
+		"IgnoreUnknown":   true,
 	}
 
 	kvs := strings.Split(args, ";")
@@ -105,20 +121,19 @@ func parseArgs(args, containerID string) ([]iptables.OutboundRule, map[string]st
 		}
 
 		key, value := parts[0], parts[1]
-
-		if key == "outbound.additional_rules" {
+		if ok := skipKeys[key]; ok {
+			continue
+		} else if key == "outbound.additional_rules" {
 			logger.Log(context.Background(), slog.LevelInfo,
 				"Found outbound.additional_rules",
-				slog.String("component", "CNI-Outbound"),
-				slog.String("containerID", containerID),
+				getLogAttrs(),
 				slog.String("rules", value),
 			)
 
 			if err := json.Unmarshal([]byte(value), &additionalRules); err != nil {
 				logger.Log(context.Background(), slog.LevelError,
 					"Failed to parse additional rules",
-					slog.String("component", "CNI-Outbound"),
-					slog.String("containerID", containerID),
+					getLogAttrs(),
 					slog.Any("error", err),
 				)
 				return nil, nil, fmt.Errorf("failed to parse additional rules from CNI args: %v", err)
@@ -127,8 +142,7 @@ func parseArgs(args, containerID string) ([]iptables.OutboundRule, map[string]st
 			metadata[key] = value
 			logger.Log(context.Background(), slog.LevelInfo,
 				"Found metadata",
-				slog.String("component", "CNI-Outbound"),
-				slog.String("containerID", containerID),
+				getLogAttrs(),
 				slog.String("key", key),
 			)
 		}
@@ -136,8 +150,7 @@ func parseArgs(args, containerID string) ([]iptables.OutboundRule, map[string]st
 
 	logger.Log(context.Background(), slog.LevelInfo,
 		"Parsed args",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", containerID),
+		getLogAttrs(),
 		slog.Int("ruleCount", len(additionalRules)),
 		slog.Int("metadataCount", len(metadata)),
 	)
@@ -148,11 +161,16 @@ func parseArgs(args, containerID string) ([]iptables.OutboundRule, map[string]st
 func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 	conf := PluginConf{}
 
+	// Parse additional rules and metadata from args
+	additionalRules, argsMetadata, err := parseArgs(args, containerID)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := json.Unmarshal(stdin, &conf); err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to parse network configuration",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", containerID),
+			getLogAttrs(),
 			slog.Any("error", err),
 		)
 		return nil, fmt.Errorf("failed to parse network configuration: %v", err)
@@ -161,8 +179,7 @@ func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 	if err := setupLogging(&conf); err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to setup logging",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", containerID),
+			getLogAttrs(),
 			slog.Any("error", err),
 		)
 		return nil, fmt.Errorf("failed to setup logging: %v", err)
@@ -170,8 +187,7 @@ func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 
 	logger.Log(context.Background(), slog.LevelInfo,
 		"Parsing configuration",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", containerID),
+		getLogAttrs(),
 	)
 
 	// Parse prevResult if it exists
@@ -179,8 +195,7 @@ func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 		if err := version.ParsePrevResult(&conf.NetConf); err != nil {
 			logger.Log(context.Background(), slog.LevelError,
 				"Could not parse prevResult",
-				slog.String("component", "CNI-Outbound"),
-				slog.String("containerID", containerID),
+				getLogAttrs(),
 				slog.Any("error", err),
 			)
 			return nil, fmt.Errorf("could not parse prevResult: %v", err)
@@ -190,8 +205,7 @@ func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 		if err != nil {
 			logger.Log(context.Background(), slog.LevelError,
 				"Failed to convert prevResult to current.Result",
-				slog.String("component", "CNI-Outbound"),
-				slog.String("containerID", containerID),
+				getLogAttrs(),
 				slog.Any("error", err),
 			)
 			return nil, fmt.Errorf("failed to convert prevResult to current.Result: %v", err)
@@ -208,12 +222,6 @@ func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 		conf.PrevResult = result
 	}
 
-	// Parse additional rules and metadata from args
-	additionalRules, argsMetadata, err := parseArgs(args, containerID)
-	if err != nil {
-		return nil, err
-	}
-
 	// Initialize metadata map only if we have metadata to add
 	if len(argsMetadata) > 0 && conf.Metadata == nil {
 		conf.Metadata = make(map[string]string)
@@ -223,8 +231,7 @@ func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 	if len(additionalRules) > 0 {
 		logger.Log(context.Background(), slog.LevelInfo,
 			"Appending additional rules",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", containerID),
+			getLogAttrs(),
 			slog.Int("ruleCount", len(additionalRules)),
 		)
 		conf.OutboundRules = append(conf.OutboundRules, additionalRules...)
@@ -232,17 +239,15 @@ func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 
 	// Merge metadata from args only if we have metadata
 	if len(argsMetadata) > 0 {
-		for k, v := range argsMetadata {
-			conf.Metadata[k] = v
-		}
+		maps.Copy(conf.Metadata, argsMetadata)
+		maps.Copy(metadata, conf.Metadata)
 	}
 
 	// Set defaults if needed
 	if conf.MainChainName == "" {
 		logger.Log(context.Background(), slog.LevelInfo,
 			"Using default MainChainName: CNI-OUTBOUND",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", containerID),
+			getLogAttrs(),
 		)
 		conf.MainChainName = "CNI-OUTBOUND"
 	}
@@ -250,8 +255,7 @@ func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 	if conf.DefaultAction == "" {
 		logger.Log(context.Background(), slog.LevelInfo,
 			"Using default DefaultAction: DROP",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", containerID),
+			getLogAttrs(),
 		)
 		conf.DefaultAction = "DROP"
 	}
@@ -260,12 +264,14 @@ func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 }
 
 func cmdAdd(args *skel.CmdArgs) error {
+	metadata["component"] = "CNI-Outbound"
+	metadata["containerID"] = args.ContainerID
+
 	conf, err := parseConfig(args.StdinData, args.Args, args.ContainerID)
 	if err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to parse config",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", args.ContainerID),
+			getLogAttrs(),
 			slog.Any("error", err),
 		)
 		return err
@@ -273,22 +279,19 @@ func cmdAdd(args *skel.CmdArgs) error {
 
 	logger.Log(context.Background(), slog.LevelInfo,
 		"CNI ADD called",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", args.ContainerID),
+		getLogAttrs(),
 	)
 
 	logger.Log(context.Background(), slog.LevelInfo,
 		"Creating IPTablesManager",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", args.ContainerID),
+		getLogAttrs(),
 	)
 
 	iptManager, err := newIPTablesManager(conf)
 	if err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to create IPTablesManager",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", args.ContainerID),
+			getLogAttrs(),
 			slog.Any("error", err),
 		)
 		return fmt.Errorf("failed to create IPTablesManager: %v", err)
@@ -296,15 +299,13 @@ func cmdAdd(args *skel.CmdArgs) error {
 
 	logger.Log(context.Background(), slog.LevelInfo,
 		"Ensuring main chain exists",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", args.ContainerID),
+		getLogAttrs(),
 	)
 
 	if err := iptManager.EnsureMainChainExists(); err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to ensure main chain exists",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", args.ContainerID),
+			getLogAttrs(),
 			slog.Any("error", err),
 		)
 		return fmt.Errorf("failed to ensure main chain exists: %v", err)
@@ -312,16 +313,14 @@ func cmdAdd(args *skel.CmdArgs) error {
 
 	logger.Log(context.Background(), slog.LevelInfo,
 		"Creating container chain",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", args.ContainerID),
+		getLogAttrs(),
 	)
 
 	containerChain := generateChainName(conf.Name, args.ContainerID)
 	if err := iptManager.CreateContainerChain(containerChain); err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to create container chain",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", args.ContainerID),
+			getLogAttrs(),
 			slog.Any("error", err),
 		)
 		return fmt.Errorf("failed to create container chain: %v", err)
@@ -329,22 +328,18 @@ func cmdAdd(args *skel.CmdArgs) error {
 
 	logger.Log(context.Background(), slog.LevelInfo,
 		"Adding rules to container chain",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", args.ContainerID),
 	)
 
 	for _, rule := range conf.OutboundRules {
 		logger.Log(context.Background(), slog.LevelInfo,
 			"Adding rule",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", args.ContainerID),
+			getLogAttrs(),
 			slog.Any("rule", rule),
 		)
 		if err := iptManager.AddRule(containerChain, rule); err != nil {
 			logger.Log(context.Background(), slog.LevelError,
 				"Failed to add rule to container chain",
-				slog.String("component", "CNI-Outbound"),
-				slog.String("containerID", args.ContainerID),
+				getLogAttrs(),
 				slog.Any("error", err),
 				slog.Any("rule", rule),
 			)
@@ -354,8 +349,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 
 	logger.Log(context.Background(), slog.LevelInfo,
 		"Adding jump rule to main chain",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", args.ContainerID),
+		getLogAttrs(),
 	)
 
 	var result *current.Result
@@ -368,8 +362,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 	if err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to parse prevResult",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", args.ContainerID),
+			getLogAttrs(),
 			slog.Any("error", err),
 		)
 		return fmt.Errorf("failed to parse prevResult: %v", err)
@@ -378,16 +371,14 @@ func cmdAdd(args *skel.CmdArgs) error {
 	containerIP := result.IPs[0].Address.IP.String()
 	logger.Log(context.Background(), slog.LevelInfo,
 		"Container IP obtained",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", args.ContainerID),
+		getLogAttrs(),
 		slog.String("ip", containerIP),
 	)
 
 	if err := iptManager.AddJumpRule(containerIP, containerChain); err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to add jump rule to main chain",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", args.ContainerID),
+			getLogAttrs(),
 			slog.Any("error", err),
 		)
 		return fmt.Errorf("failed to add jump rule to main chain: %v", err)
@@ -395,19 +386,20 @@ func cmdAdd(args *skel.CmdArgs) error {
 
 	logger.Log(context.Background(), slog.LevelInfo,
 		"CNI ADD completed successfully",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", args.ContainerID),
+		getLogAttrs(),
 	)
 	return types.PrintResult(result, conf.CNIVersion)
 }
 
 func cmdDel(args *skel.CmdArgs) error {
+	metadata["component"] = "CNI-Outbound"
+	metadata["containerID"] = args.ContainerID
+
 	conf, err := parseConfig(args.StdinData, args.Args, args.ContainerID)
 	if err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to parse config",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", args.ContainerID),
+			getLogAttrs(),
 			slog.Any("error", err),
 		)
 		return err
@@ -415,22 +407,19 @@ func cmdDel(args *skel.CmdArgs) error {
 
 	logger.Log(context.Background(), slog.LevelInfo,
 		"CNI DEL called",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", args.ContainerID),
+		getLogAttrs(),
 	)
 
 	logger.Log(context.Background(), slog.LevelInfo,
 		"Creating IPTablesManager",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", args.ContainerID),
+		getLogAttrs(),
 	)
 
 	iptManager, err := newIPTablesManager(conf)
 	if err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to create IPTablesManager",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", args.ContainerID),
+			getLogAttrs(),
 			slog.Any("error", err),
 		)
 		return fmt.Errorf("failed to create IPTablesManager: %v", err)
@@ -438,31 +427,27 @@ func cmdDel(args *skel.CmdArgs) error {
 
 	logger.Log(context.Background(), slog.LevelInfo,
 		"Removing container chain",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", args.ContainerID),
+		getLogAttrs(),
 	)
 
 	containerChain := generateChainName(conf.Name, args.ContainerID)
 	if err := iptManager.RemoveJumpRuleByTargetChain(containerChain); err != nil {
 		logger.Log(context.Background(), slog.LevelWarn,
 			"Failed to remove jump rule from main chain",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", args.ContainerID),
+			getLogAttrs(),
 			slog.Any("error", err),
 		)
 	}
 
 	logger.Log(context.Background(), slog.LevelInfo,
 		"Clearing and deleting container chain",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", args.ContainerID),
+		getLogAttrs(),
 	)
 
 	if err := iptManager.ClearAndDeleteChain(containerChain); err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to clear and delete container chain",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", args.ContainerID),
+			getLogAttrs(),
 			slog.Any("error", err),
 		)
 		return fmt.Errorf("failed to clear and delete container chain: %v", err)
@@ -470,19 +455,20 @@ func cmdDel(args *skel.CmdArgs) error {
 
 	logger.Log(context.Background(), slog.LevelInfo,
 		"CNI DEL completed successfully",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", args.ContainerID),
+		getLogAttrs(),
 	)
 	return nil
 }
 
 func cmdCheck(args *skel.CmdArgs) error {
+	metadata["component"] = "CNI-Outbound"
+	metadata["containerID"] = args.ContainerID
+
 	conf, err := parseConfig(args.StdinData, args.Args, args.ContainerID)
 	if err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to parse config",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", args.ContainerID),
+			getLogAttrs(),
 			slog.Any("error", err),
 		)
 		return err
@@ -490,22 +476,19 @@ func cmdCheck(args *skel.CmdArgs) error {
 
 	logger.Log(context.Background(), slog.LevelInfo,
 		"CNI CHECK called",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", args.ContainerID),
+		getLogAttrs(),
 	)
 
 	logger.Log(context.Background(), slog.LevelInfo,
 		"Creating IPTablesManager",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", args.ContainerID),
+		getLogAttrs(),
 	)
 
 	iptManager, err := newIPTablesManager(conf)
 	if err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to create IPTablesManager",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", args.ContainerID),
+			getLogAttrs(),
 			slog.Any("error", err),
 		)
 		return fmt.Errorf("failed to create IPTablesManager: %v", err)
@@ -513,16 +496,14 @@ func cmdCheck(args *skel.CmdArgs) error {
 
 	logger.Log(context.Background(), slog.LevelInfo,
 		"Checking if main chain exists",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", args.ContainerID),
+		getLogAttrs(),
 	)
 
 	exists, err := iptManager.ChainExists(conf.MainChainName)
 	if err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to check if main chain exists",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", args.ContainerID),
+			getLogAttrs(),
 			slog.Any("error", err),
 		)
 		return fmt.Errorf("failed to check if main chain exists: %v", err)
@@ -530,8 +511,7 @@ func cmdCheck(args *skel.CmdArgs) error {
 	if !exists {
 		logger.Log(context.Background(), slog.LevelError,
 			"Main chain does not exist",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", args.ContainerID),
+			getLogAttrs(),
 			slog.String("chain", conf.MainChainName),
 		)
 		return fmt.Errorf("main chain %s does not exist", conf.MainChainName)
@@ -539,8 +519,7 @@ func cmdCheck(args *skel.CmdArgs) error {
 
 	logger.Log(context.Background(), slog.LevelInfo,
 		"Checking container chain",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", args.ContainerID),
+		getLogAttrs(),
 	)
 
 	containerChain := generateChainName(conf.Name, args.ContainerID)
@@ -548,8 +527,7 @@ func cmdCheck(args *skel.CmdArgs) error {
 	if err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to check if container chain exists",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", args.ContainerID),
+			getLogAttrs(),
 			slog.Any("error", err),
 		)
 		return fmt.Errorf("failed to check if container chain exists: %v", err)
@@ -557,8 +535,7 @@ func cmdCheck(args *skel.CmdArgs) error {
 	if !exists {
 		logger.Log(context.Background(), slog.LevelError,
 			"Container chain does not exist",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", args.ContainerID),
+			getLogAttrs(),
 			slog.String("chain", containerChain),
 		)
 		return fmt.Errorf("container chain %s does not exist", containerChain)
@@ -566,15 +543,13 @@ func cmdCheck(args *skel.CmdArgs) error {
 
 	logger.Log(context.Background(), slog.LevelInfo,
 		"Verifying rules in container chain",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", args.ContainerID),
+		getLogAttrs(),
 	)
 
 	if err := iptManager.VerifyRules(containerChain, conf.OutboundRules); err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Rule verification failed",
-			slog.String("component", "CNI-Outbound"),
-			slog.String("containerID", args.ContainerID),
+			getLogAttrs(),
 			slog.Any("error", err),
 		)
 		return fmt.Errorf("rule verification failed: %v", err)
@@ -582,8 +557,7 @@ func cmdCheck(args *skel.CmdArgs) error {
 
 	logger.Log(context.Background(), slog.LevelInfo,
 		"CNI CHECK completed successfully",
-		slog.String("component", "CNI-Outbound"),
-		slog.String("containerID", args.ContainerID),
+		getLogAttrs(),
 	)
 	return nil
 }
