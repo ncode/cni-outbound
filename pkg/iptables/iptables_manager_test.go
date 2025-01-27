@@ -241,51 +241,78 @@ func TestIPTablesManager(t *testing.T) {
 	})
 
 	t.Run("AddRuleWithDryRun", func(t *testing.T) {
-		mockIpt := newMockIPTables()
-		manager := &IPTablesManager{
-			ipt:           mockIpt,
-			mainChainName: "CNI-OUTBOUND",
-			defaultAction: "DROP",
-			dryRun:        true,
+		testCases := []struct {
+			name           string
+			rule           OutboundRule
+			expectedPrefix string
+		}{
+			{
+				name: "DROP rule",
+				rule: OutboundRule{
+					Host:   "192.168.1.1",
+					Proto:  "tcp",
+					Port:   "80",
+					Action: "DROP",
+				},
+				expectedPrefix: "[CNI-OUTBOUND-BLOCKED]",
+			},
+			{
+				name: "ACCEPT rule",
+				rule: OutboundRule{
+					Host:   "192.168.1.1",
+					Proto:  "tcp",
+					Port:   "80",
+					Action: "ACCEPT",
+				},
+				expectedPrefix: "[CNI-OUTBOUND-ACCEPTED]",
+			},
 		}
 
-		chainName := "TEST_CHAIN"
-		mockIpt.chains[chainName] = true // Ensure the chain exists
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				mockIpt := newMockIPTables()
+				manager := &IPTablesManager{
+					ipt:           mockIpt,
+					mainChainName: "CNI-OUTBOUND",
+					defaultAction: "DROP",
+					dryRun:        true,
+				}
 
-		rule := OutboundRule{Host: "192.168.1.1", Proto: "tcp", Port: "80", Action: "DROP"}
-		err := manager.AddRule(chainName, rule)
-		if err != nil {
-			t.Fatalf("AddRule failed: %v", err)
-		}
+				chainName := "TEST_CHAIN"
+				mockIpt.chains[chainName] = true // Ensure the chain exists
 
-		// Check if rules were added to the chain
-		rules := mockIpt.rules[chainName]
-		if len(rules) != 2 {
-			t.Fatalf("Expected 2 rules (log and accept), got %d", len(rules))
-		}
+				err := manager.AddRule(chainName, tc.rule)
+				if err != nil {
+					t.Fatalf("AddRule failed: %v", err)
+				}
 
-		// Check log rule
-		expectedLogRule := "-d 192.168.1.1 -p tcp --dport 80 -j LOG"
-		if !strings.Contains(rules[0], expectedLogRule) {
-			t.Errorf("Log rule mismatch. Expected: %s, Got: %s", expectedLogRule, rules[0])
-		}
+				// Check if rules were added to the chain
+				rules := mockIpt.rules[chainName]
+				if len(rules) != 2 {
+					t.Fatalf("Expected 2 rules (log and accept), got %d", len(rules))
+				}
 
-		// Check prefix in log rule
-		if !strings.Contains(rules[0], "[CNI-OUTBOUND-BLOCKED]") {
-			t.Error("Log rule missing expected prefix [CNI-OUTBOUND-BLOCKED]")
-		}
+				// Check log rule
+				expectedLogRule := fmt.Sprintf("-d %s -p %s --dport %s -j LOG",
+					tc.rule.Host, tc.rule.Proto, tc.rule.Port)
+				if !strings.Contains(rules[0], expectedLogRule) {
+					t.Errorf("Log rule mismatch. Expected: %s, Got: %s", expectedLogRule, rules[0])
+				}
 
-		// Check accept rule
-		expectedAcceptRule := "-d 192.168.1.1 -p tcp --dport 80 -j ACCEPT"
-		if !strings.Contains(rules[1], expectedAcceptRule) {
-			t.Errorf("Accept rule mismatch. Expected: %s, Got: %s", expectedAcceptRule, rules[1])
-		}
+				// Check prefix in log rule
+				if !strings.Contains(rules[0], tc.expectedPrefix) {
+					t.Errorf("Log rule has wrong prefix. Expected: %s, Got: %s",
+						tc.expectedPrefix, rules[0])
+				}
 
-		// Check rules were inserted in correct order
-		if len(rules) > 2 {
-			if strings.Contains(rules[2], expectedLogRule) || strings.Contains(rules[2], expectedAcceptRule) {
-				t.Error("Rules were not inserted at the beginning of the chain")
-			}
+				// Check accept rule
+				expectedAcceptRule := fmt.Sprintf("-d %s -p %s --dport %s -j ACCEPT",
+					tc.rule.Host, tc.rule.Proto, tc.rule.Port)
+				if !strings.Contains(rules[1], expectedAcceptRule) {
+					t.Errorf("Accept rule mismatch. Expected: %s, Got: %s",
+						expectedAcceptRule, rules[1])
+				}
+			})
 		}
 	})
 

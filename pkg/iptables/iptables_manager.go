@@ -132,11 +132,18 @@ func (m *IPTablesManager) AddRule(chainName string, rule OutboundRule) error {
 	ruleSpec := []string{"-d", rule.Host, "-p", rule.Proto, "--dport", rule.Port}
 
 	if m.dryRun {
-		// Add logging rule
+		// Add logging rule with prefix based on original action
 		logRuleSpec := append([]string{}, ruleSpec...)
+		var logPrefix string
+		if rule.Action == "DROP" {
+			logPrefix = "[CNI-OUTBOUND-BLOCKED]"
+		} else {
+			logPrefix = "[CNI-OUTBOUND-ACCEPTED]"
+		}
+
 		logRuleSpec = append(logRuleSpec,
 			"-j", "LOG",
-			"--log-prefix", fmt.Sprintf("[CNI-OUTBOUND-BLOCKED] "))
+			"--log-prefix", logPrefix)
 
 		if err := m.ipt.Insert("filter", chainName, 1, logRuleSpec...); err != nil {
 			return fmt.Errorf("failed to add logging rule: %v", err)
