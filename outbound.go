@@ -360,14 +360,12 @@ func cmdAdd(args *skel.CmdArgs) error {
 		"Adding jump rule to main chain",
 		getLogAttrs(),
 	)
-
-	var result *current.Result
 	if conf.PrevResult == nil {
 		// If there's no previous result, return an error
 		return fmt.Errorf("no prevResult found")
 	}
 
-	result, err = current.NewResultFromResult(conf.PrevResult)
+	result, err := current.NewResultFromResult(conf.PrevResult)
 	if err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to parse prevResult",
@@ -377,13 +375,31 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("failed to parse prevResult: %v", err)
 	}
 
-	containerIP := result.IPs[0].Address.IP.String()
+	var containerIP string
+	var foundIPv4 bool
+
+	// Search for the first IPv4 address
+	for _, ip := range result.IPs {
+		if ip.Address.IP.To4() == nil {
+			containerIP = ip.Address.IP.String()
+			foundIPv4 = true
+			break
+		}
+	}
+
+	if !foundIPv4 {
+		logger.Log(context.Background(), slog.LevelError,
+			"No IPv4 addresses found in prevResult",
+			getLogAttrs(),
+		)
+		return fmt.Errorf("no IPv4 addresses found in prevResult")
+	}
+
 	logger.Log(context.Background(), slog.LevelInfo,
 		"Container IP obtained",
 		getLogAttrs(),
 		slog.String("ip", containerIP),
 	)
-
 	if err := iptManager.AddJumpRule(containerIP, containerChain); err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to add jump rule to main chain",
