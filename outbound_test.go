@@ -1518,7 +1518,7 @@ func TestSetupLogging(t *testing.T) {
 				Logging: tc.config,
 			}
 
-			err := setupLogging(conf)
+			err := setupPluginLogging(conf)
 			tc.validate(t, err)
 		})
 	}
