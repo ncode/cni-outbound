@@ -1931,3 +1931,120 @@ func TestParseConfig_LogDrops(t *testing.T) {
 		})
 	}
 }
+
+// mockNoOpManager is a trivial Manager that does nothing, just to avoid iptables calls.
+type mockNoOpManager struct{}
+
+func (m *mockNoOpManager) EnsureMainChainExists() error                           { return nil }
+func (m *mockNoOpManager) CreateContainerChain(chain string) error                { return nil }
+func (m *mockNoOpManager) AddRule(chain string, rule iptables.OutboundRule) error { return nil }
+func (m *mockNoOpManager) AddJumpRule(sourceIP, targetChain string) error         { return nil }
+func (m *mockNoOpManager) RemoveJumpRule(sourceIP, targetChain string) error      { return nil }
+func (m *mockNoOpManager) RemoveJumpRuleByTargetChain(targetChain string) error   { return nil }
+func (m *mockNoOpManager) ClearAndDeleteChain(chainName string) error             { return nil }
+func (m *mockNoOpManager) ChainExists(chainName string) (bool, error)             { return false, nil }
+func (m *mockNoOpManager) VerifyRules(chainName string, rules []iptables.OutboundRule) error {
+	return nil
+}
+
+func TestCmdAdd_FailedToParsePrevResult(t *testing.T) {
+	// We craft a scenario where current.NewResultFromResult(...) fails
+	// or yields invalid structure.
+
+	// 1. Provide a fake config with a broken RawPrevResult
+	stdinConfig := `{
+        "cniVersion": "0.4.0",
+        "name": "test-net",
+        "type": "outbound",
+        "prevResult": {
+            "cniVersion": "0.4.0",
+            "interfaces": [
+                { "name": "eth0" }
+            ],
+            "ips": [
+                {
+                    "address": "999.999.999.999/999"
+                }
+            ]
+        }
+    }`
+
+	// 2. Create CmdArgs with that config
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(stdinConfig),
+	}
+
+	// 3. We mock newIPTablesManager if needed or just let the plugin create a no-op
+	originalNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		// Return a mock or a no-op manager so we don't fail on iptables calls
+		return &mockNoOpManager{}, nil
+	}
+	defer func() { newIPTablesManager = originalNewIPTablesManager }()
+
+	// 4. Call cmdAdd, expecting "failed to parse prevResult"
+	err := cmdAdd(args)
+	if err == nil {
+		t.Fatal("Expected error but got nil")
+	}
+
+	// 5. Verify the error message
+	if !strings.Contains(err.Error(), "could not parse prevResult: could not parse prevResult: invalid CIDR address: 999.999.999.999/999") {
+		t.Errorf("Expected 'could not parse prevResult: could not parse prevResult: invalid CIDR address: 999.999.999.999/999' in error, got %q", err.Error())
+	}
+}
+
+func TestCmdAdd_NoIPv4Addresses(t *testing.T) {
+	// Provide a prevResult with only IPv6 or empty IP array
+	stdinConfig := `{
+        "cniVersion": "0.4.0",
+        "name": "test-net",
+        "type": "outbound",
+        "prevResult": {
+            "cniVersion": "0.4.0",
+            "interfaces": [
+                { "name": "eth0" }
+            ],
+            "ips": [
+                {
+                    "version": "6",
+                    "interface": 0,
+                    "address": "fe80::1234/64",
+                    "gateway": "fe80::1"
+                }
+            ]
+        }
+    }`
+
+	args := &skel.CmdArgs{
+		ContainerID: "test-container",
+		Netns:       "/var/run/netns/test",
+		IfName:      "eth0",
+		Args:        "",
+		Path:        "/opt/cni/bin",
+		StdinData:   []byte(stdinConfig),
+	}
+
+	// If we actually create an iptables manager, it won't matter because
+	// we'll fail before we call iptables methods. But we can still override:
+	originalNewIPTablesManager := newIPTablesManager
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return &mockNoOpManager{}, nil
+	}
+	defer func() { newIPTablesManager = originalNewIPTablesManager }()
+
+	// 4. Expect 'no IPv4 addresses found in prevResult'
+	err := cmdAdd(args)
+	if err == nil {
+		t.Fatal("Expected error but got nil")
+	}
+
+	if !strings.Contains(err.Error(), "no IPv4 addresses found in prevResult") {
+		t.Errorf("Expected 'no IPv4 addresses found in prevResult' in error, got %q", err.Error())
+	}
+}
