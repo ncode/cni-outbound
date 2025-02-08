@@ -2126,34 +2126,28 @@ func TestCreateContainerChain_FailDryRunAcceptAppend(t *testing.T) {
 
 func TestRemoveJumpRuleByTargetChain_SkipShortLines(t *testing.T) {
 	mockIpt := newMockIPTables()
+
+	// We'll have a few normal lines plus one short line
+	mockIpt.rules["CNI-OUTBOUND"] = []string{
+		"-A CNI-OUTBOUND -s 10.0.0.1 -j TARGET_CHAIN", // normal line
+		"-A", // short line => tokens < 2 => skip
+	}
+
 	manager := &IPTablesManager{
 		ipt:           mockIpt,
 		mainChainName: "CNI-OUTBOUND",
 		defaultAction: "DROP",
 	}
 
-	// Some "normal" lines
-	mockIpt.rules["CNI-OUTBOUND"] = []string{
-		"-A CNI-OUTBOUND -s 10.0.0.1 -j SOME_CHAIN",
-		"-A CNI-OUTBOUND -s 10.0.0.2 -j ANOTHER_CHAIN",
-	}
-	// And a short line with fewer than 2 tokens
-	mockIpt.rules["CNI-OUTBOUND"] = append(mockIpt.rules["CNI-OUTBOUND"], "-A")
+	err := manager.RemoveJumpRuleByTargetChain("TARGET_CHAIN")
+	assert.NoError(t, err, "Expected no error removing jump rule")
 
-	// We remove jump rule by target chain => won't find it, but also won't fail due to short line
-	err := manager.RemoveJumpRuleByTargetChain("SOME_CHAIN")
-	assert.NoError(t, err, "We expect removal to succeed for SOME_CHAIN")
-
-	// Confirm it did remove the line referencing "SOME_CHAIN"
+	// The short line is skipped. The normal line is removed successfully.
 	rules, _ := mockIpt.List("filter", "CNI-OUTBOUND")
-	found := false
-	for _, r := range rules {
-		if strings.Contains(r, "SOME_CHAIN") {
-			found = true
-			break
-		}
+	if len(rules) != 1 {
+		t.Errorf("Expected 1 line left after removal, got %d: %v", len(rules), rules)
 	}
-	if found {
-		t.Errorf("Expected jump rule to be removed, but it's still found in: %v", rules)
+	if strings.Contains(rules[0], "TARGET_CHAIN") {
+		t.Errorf("Expected jump rule referencing TARGET_CHAIN to be removed, but it still exists: %v", rules[0])
 	}
 }
