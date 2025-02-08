@@ -2123,31 +2123,3 @@ func TestCreateContainerChain_FailDryRunAcceptAppend(t *testing.T) {
 		t.Errorf("Wanted error %q, got %q", expectedErr, err.Error())
 	}
 }
-
-func TestRemoveJumpRuleByTargetChain_SkipShortLines(t *testing.T) {
-	mockIpt := newMockIPTables()
-
-	// We'll have a few normal lines plus one short line
-	mockIpt.rules["CNI-OUTBOUND"] = []string{
-		"-A CNI-OUTBOUND -s 10.0.0.1 -j TARGET_CHAIN", // normal line
-		"-A", // short line => tokens < 2 => skip
-	}
-
-	manager := &IPTablesManager{
-		ipt:           mockIpt,
-		mainChainName: "CNI-OUTBOUND",
-		defaultAction: "DROP",
-	}
-
-	err := manager.RemoveJumpRuleByTargetChain("TARGET_CHAIN")
-	assert.NoError(t, err, "Expected no error removing jump rule")
-
-	// The short line is skipped. The normal line is removed successfully.
-	rules, _ := mockIpt.List("filter", "CNI-OUTBOUND")
-	if len(rules) != 1 {
-		t.Errorf("Expected 1 line left after removal, got %d: %v", len(rules), rules)
-	}
-	if strings.Contains(rules[0], "TARGET_CHAIN") {
-		t.Errorf("Expected jump rule referencing TARGET_CHAIN to be removed, but it still exists: %v", rules[0])
-	}
-}

@@ -210,9 +210,6 @@ func (m *IPTablesManager) RemoveJumpRuleByTargetChain(targetChain string) error 
 
 	for _, ruleLine := range rules {
 		tokens := strings.Fields(ruleLine)
-		if len(tokens) < 2 {
-			continue
-		}
 		// Typically tokens start with "-A <chain>" then subsequent flags.
 		// We want to find the position of "-j" and see if the next token matches targetChain.
 		for i := 0; i < len(tokens); i++ {
