@@ -2093,3 +2093,67 @@ func TestCreateContainerChainWithChainPrefixes(t *testing.T) {
 		})
 	}
 }
+
+func TestCreateContainerChain_FailDryRunAcceptAppend(t *testing.T) {
+	mockIpt := newMockIPTables()
+
+	callCount := 0
+	mockIpt.appendFunc = func(table, chain string, rulespec ...string) error {
+		callCount++
+		// calls: #1 => RELATED,ESTABLISHED, #2 => LOG, #3 => ACCEPT => fail #3
+		if callCount == 3 {
+			return fmt.Errorf("mock final accept error")
+		}
+		return nil
+	}
+
+	manager := &IPTablesManager{
+		ipt:           mockIpt,
+		mainChainName: "CNI-OUTBOUND",
+		defaultAction: "DROP",
+		dryRun:        true,
+	}
+
+	err := manager.CreateContainerChain("TEST_DRYRUN_CHAIN")
+	if err == nil {
+		t.Fatal("Expected an error but got nil")
+	}
+	expectedErr := "failed to set default action for container chain: mock final accept error"
+	if err.Error() != expectedErr {
+		t.Errorf("Wanted error %q, got %q", expectedErr, err.Error())
+	}
+}
+
+func TestRemoveJumpRuleByTargetChain_SkipShortLines(t *testing.T) {
+	mockIpt := newMockIPTables()
+	manager := &IPTablesManager{
+		ipt:           mockIpt,
+		mainChainName: "CNI-OUTBOUND",
+		defaultAction: "DROP",
+	}
+
+	// Some "normal" lines
+	mockIpt.rules["CNI-OUTBOUND"] = []string{
+		"-A CNI-OUTBOUND -s 10.0.0.1 -j SOME_CHAIN",
+		"-A CNI-OUTBOUND -s 10.0.0.2 -j ANOTHER_CHAIN",
+	}
+	// And a short line with fewer than 2 tokens
+	mockIpt.rules["CNI-OUTBOUND"] = append(mockIpt.rules["CNI-OUTBOUND"], "-A")
+
+	// We remove jump rule by target chain => won't find it, but also won't fail due to short line
+	err := manager.RemoveJumpRuleByTargetChain("SOME_CHAIN")
+	assert.NoError(t, err, "We expect removal to succeed for SOME_CHAIN")
+
+	// Confirm it did remove the line referencing "SOME_CHAIN"
+	rules, _ := mockIpt.List("filter", "CNI-OUTBOUND")
+	found := false
+	for _, r := range rules {
+		if strings.Contains(r, "SOME_CHAIN") {
+			found = true
+			break
+		}
+	}
+	if found {
+		t.Errorf("Expected jump rule to be removed, but it's still found in: %v", rules)
+	}
+}
