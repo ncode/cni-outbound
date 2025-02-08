@@ -112,7 +112,8 @@ func (m *IPTablesManager) CreateContainerChain(containerChain string) error {
 	}
 
 	if m.dryRun {
-		// In dry-run mode, log anything that hits the default action
+		// In dry-run mode, log anything that would otherwise hit defaultAction,
+		// and then ACCEPT instead of dropping.
 		logSpec := []string{
 			"-j", "LOG",
 			"--log-prefix", fmt.Sprintf(`"[CNI-OUTBOUND-%s-%s]"`, containerChain, m.defaultAction),
@@ -120,15 +121,26 @@ func (m *IPTablesManager) CreateContainerChain(containerChain string) error {
 		if err := m.ipt.Append("filter", containerChain, logSpec...); err != nil {
 			return fmt.Errorf("failed to add default action logging rule: %v", err)
 		}
-	}
-
-	// Default action is either the user-specified action or ACCEPT if dryRun
-	finalAction := m.defaultAction
-	if m.dryRun {
-		finalAction = "ACCEPT"
-	}
-	if err := m.ipt.Append("filter", containerChain, "-j", finalAction); err != nil {
-		return fmt.Errorf("failed to set default action for container chain: %v", err)
+		// Dry-run => final action is ACCEPT
+		if err := m.ipt.Append("filter", containerChain, "-j", "ACCEPT"); err != nil {
+			return fmt.Errorf("failed to set default action for container chain: %v", err)
+		}
+	} else {
+		// Normal (non-dry-run) mode
+		if strings.EqualFold(m.defaultAction, "DROP") && m.logDrops {
+			// Log before the drop
+			logSpec := []string{
+				"-j", "LOG",
+				"--log-prefix", fmt.Sprintf(`"[CNI-OUTBOUND-%s-DEFAULT-BLOCKED]"`, containerChain),
+			}
+			if err := m.ipt.Append("filter", containerChain, logSpec...); err != nil {
+				return fmt.Errorf("failed to add default DROP logging rule: %v", err)
+			}
+		}
+		// Now append the final default action rule (DROP, ACCEPT, etc.)
+		if err := m.ipt.Append("filter", containerChain, "-j", m.defaultAction); err != nil {
+			return fmt.Errorf("failed to set default action for container chain: %v", err)
+		}
 	}
 
 	return nil
