@@ -1555,7 +1555,7 @@ func TestParseAdditionalRules(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			rules, _, err := parseArgs(tc.args, "test-container")
+			rules, _, err := parseArgs(tc.args)
 			if tc.expectedError {
 				assert.Error(t, err)
 			} else {
@@ -1623,7 +1623,7 @@ func TestParseArgsWithLogging(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			logBuffer.Reset()
 
-			rules, metadata, err := parseArgs(tc.args, "test-container")
+			rules, metadata, err := parseArgs(tc.args)
 
 			if tc.expectError {
 				assert.Error(t, err)
@@ -1713,7 +1713,7 @@ func TestParseArgs(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			rules, meta, err := parseArgs(tc.args, "test-container")
+			rules, meta, err := parseArgs(tc.args)
 
 			if tc.expectError {
 				assert.Error(t, err)

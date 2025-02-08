@@ -67,7 +67,7 @@ func generateChainName(netName, containerID string) string {
 }
 
 // parseArgs extracts additional outbound rules and metadata from CNI_ARGS.
-func parseArgs(args, containerID string) ([]iptables.OutboundRule, map[string]string, error) {
+func parseArgs(args string) ([]iptables.OutboundRule, map[string]string, error) {
 	logger.Log(context.Background(), slog.LevelInfo,
 		"Parsing CNI arguments",
 		getLogAttrs(),
@@ -234,7 +234,7 @@ func applyAdditionalRules(conf *PluginConf, additionalRules []iptables.OutboundR
 // parseConfig is the main entry for reading stdin config + CNI_ARGS.
 // It delegates to smaller helper functions for clarity.
 func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
-	additionalRules, argsMetadata, err := parseArgs(args, containerID)
+	additionalRules, argsMetadata, err := parseArgs(args)
 	if err != nil {
 		return nil, err
 	}
