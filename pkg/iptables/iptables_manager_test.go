@@ -457,6 +457,54 @@ func TestIPTablesManager(t *testing.T) {
 			t.Error("RemoveJumpRuleByTargetChain should have failed for non-existent chain")
 		}
 	})
+
+	t.Run("CreateContainerChain defaultAction=DROP logDrops=true", func(t *testing.T) {
+		// Use a fresh mock so it doesn't conflict with other sub-tests
+		mockIpt := newMockIPTables()
+		manager := &IPTablesManager{
+			ipt:           mockIpt,
+			mainChainName: "CNI-OUTBOUND",
+			defaultAction: "DROP",
+			logDrops:      true, // crucial for default DROP logging
+		}
+
+		containerChain := "DEFAULT_DROP_CHAIN"
+		err := manager.CreateContainerChain(containerChain)
+		if err != nil {
+			t.Fatalf("CreateContainerChain failed: %v", err)
+		}
+
+		// Check if the chain was actually created
+		if !mockIpt.chains[containerChain] {
+			t.Error("Container chain was not created")
+		}
+
+		// We expect 3 rules now:
+		// 1) -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+		// 2) -j LOG --log-prefix "[CNI-OUTBOUND-DEFAULT_DROP_CHAIN-DEFAULT-BLOCKED]"
+		// 3) -j DROP
+		rules := mockIpt.rules[containerChain]
+		if len(rules) != 3 {
+			t.Fatalf("Expected 3 rules in container chain, got %d: %v", len(rules), rules)
+		}
+
+		// 1) Check the RELATED,ESTABLISHED rule
+		if !strings.Contains(rules[0], "-m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT") {
+			t.Errorf("Expected first rule to allow RELATED,ESTABLISHED but got: %s", rules[0])
+		}
+
+		// 2) Check the default-drop LOG rule
+		if !strings.Contains(rules[1], "-j LOG") ||
+			!strings.Contains(rules[1], `"[CNI-OUTBOUND-DEFAULT_DROP_CHAIN-DEFAULT-BLOCKED]"`) {
+			t.Errorf("Expected second rule to be the default drop logging rule, got: %s", rules[1])
+		}
+
+		// 3) Finally the default DROP
+		if !strings.Contains(rules[2], "-j DROP") {
+			t.Errorf("Expected third rule to be DROP, got: %s", rules[2])
+		}
+	})
+
 }
 
 func TestNewIPTablesManager(t *testing.T) {
@@ -2043,5 +2091,35 @@ func TestCreateContainerChainWithChainPrefixes(t *testing.T) {
 				assert.Equal(t, wantRule, rules[i], "rule %d content", i)
 			}
 		})
+	}
+}
+
+func TestCreateContainerChain_FailDryRunAcceptAppend(t *testing.T) {
+	mockIpt := newMockIPTables()
+
+	callCount := 0
+	mockIpt.appendFunc = func(table, chain string, rulespec ...string) error {
+		callCount++
+		// calls: #1 => RELATED,ESTABLISHED, #2 => LOG, #3 => ACCEPT => fail #3
+		if callCount == 3 {
+			return fmt.Errorf("mock final accept error")
+		}
+		return nil
+	}
+
+	manager := &IPTablesManager{
+		ipt:           mockIpt,
+		mainChainName: "CNI-OUTBOUND",
+		defaultAction: "DROP",
+		dryRun:        true,
+	}
+
+	err := manager.CreateContainerChain("TEST_DRYRUN_CHAIN")
+	if err == nil {
+		t.Fatal("Expected an error but got nil")
+	}
+	expectedErr := "failed to set default action for container chain: mock final accept error"
+	if err.Error() != expectedErr {
+		t.Errorf("Wanted error %q, got %q", expectedErr, err.Error())
 	}
 }

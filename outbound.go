@@ -20,11 +20,13 @@ import (
 	"github.com/ncode/cni-outbound/pkg/iptables"
 )
 
+// LogConfig holds logging-related settings.
 type LogConfig struct {
 	Enable    bool   `json:"enable"`
 	Directory string `json:"directory"`
 }
 
+// PluginConf represents the plugin configuration.
 type PluginConf struct {
 	types.NetConf
 
@@ -37,59 +39,35 @@ type PluginConf struct {
 	LogDrops      bool                    `json:"logDrops"`
 }
 
+var (
+	// logger is the structured logger instance used throughout the plugin.
+	logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	// newIPTablesManager is a function pointer for creating an IPTablesManager (for mocking in tests).
+	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+		return iptables.NewIPTablesManager(conf.MainChainName, conf.DefaultAction, conf.DryRun, conf.LogDrops)
+	}
+	// metadata is used to store logging metadata (e.g., container ID).
+	metadata = map[string]string{}
+)
+
+// getLogAttrs aggregates the contents of the global `metadata` map into a slog.Attr.
 func getLogAttrs() slog.Attr {
 	var attrs []any
-
 	if metadata != nil {
 		for k, v := range metadata {
 			attrs = append(attrs, slog.String(k, v))
 		}
 	}
-
 	return slog.Group("metadata", attrs...)
 }
 
-var (
-	logger             = slog.New(slog.NewTextHandler(io.Discard, nil))
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
-		return iptables.NewIPTablesManager(conf.MainChainName, conf.DefaultAction, conf.DryRun, conf.LogDrops)
-	}
-	metadata = map[string]string{}
-)
-
-func setupLogging(conf *PluginConf) error {
-	if !conf.Logging.Enable {
-		return nil
-	}
-
-	var logWriter *os.File
-	if conf.Logging.Directory == "" {
-		conf.Logging.Directory = "/var/log/cni"
-	}
-
-	currentDate := time.Now().Format("2006-01-02")
-	logFileName := fmt.Sprintf("%s/outbound-%s.log", strings.TrimSuffix(conf.Logging.Directory, "/"), currentDate)
-
-	file, err := os.OpenFile(logFileName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to open log file: %v", err)
-	}
-	logWriter = file
-
-	opts := slog.HandlerOptions{
-		AddSource: true,
-		Level:     slog.LevelInfo,
-	}
-	handler := slog.NewJSONHandler(logWriter, &opts)
-	logger = slog.New(handler)
-	return nil
-}
-
+// generateChainName creates a short but unique chain name using a prefix and the container ID.
 func generateChainName(netName, containerID string) string {
 	return utils.MustFormatChainNameWithPrefix(netName, containerID, "OUT-")
 }
 
-func parseArgs(args, containerID string) ([]iptables.OutboundRule, map[string]string, error) {
+// parseArgs extracts additional outbound rules and metadata from CNI_ARGS.
+func parseArgs(args string) ([]iptables.OutboundRule, map[string]string, error) {
 	logger.Log(context.Background(), slog.LevelInfo,
 		"Parsing CNI arguments",
 		getLogAttrs(),
@@ -107,7 +85,7 @@ func parseArgs(args, containerID string) ([]iptables.OutboundRule, map[string]st
 		return nil, metadata, nil
 	}
 
-	// Skip CNI env vars that are already available in skel.CmdArgs
+	// Skip known CNI env vars that are already available in skel.CmdArgs
 	skipKeys := map[string]bool{
 		"CNI_COMMAND":     true,
 		"CNI_CONTAINERID": true,
@@ -123,7 +101,7 @@ func parseArgs(args, containerID string) ([]iptables.OutboundRule, map[string]st
 		}
 
 		key, value := parts[0], parts[1]
-		if ok := skipKeys[key]; ok {
+		if skipKeys[key] {
 			continue
 		} else if key == "outbound.additional_rules" {
 			logger.Log(context.Background(), slog.LevelInfo,
@@ -131,7 +109,6 @@ func parseArgs(args, containerID string) ([]iptables.OutboundRule, map[string]st
 				getLogAttrs(),
 				slog.String("rules", value),
 			)
-
 			if err := json.Unmarshal([]byte(value), &additionalRules); err != nil {
 				logger.Log(context.Background(), slog.LevelError,
 					"Failed to parse additional rules",
@@ -160,16 +137,10 @@ func parseArgs(args, containerID string) ([]iptables.OutboundRule, map[string]st
 	return additionalRules, metadata, nil
 }
 
-func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
-	conf := PluginConf{}
-
-	// Parse additional rules and metadata from args
-	additionalRules, argsMetadata, err := parseArgs(args, containerID)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := json.Unmarshal(stdin, &conf); err != nil {
+// readJSONConfig unmarshals the plugin config from stdin JSON.
+func readJSONConfig(stdin []byte) (*PluginConf, error) {
+	conf := &PluginConf{}
+	if err := json.Unmarshal(stdin, conf); err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to parse network configuration",
 			getLogAttrs(),
@@ -177,8 +148,103 @@ func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 		)
 		return nil, fmt.Errorf("failed to parse network configuration: %v", err)
 	}
+	return conf, nil
+}
 
-	if err := setupLogging(&conf); err != nil {
+// setupPluginLogging configures the logger based on `Logging` fields in the plugin config.
+func setupPluginLogging(conf *PluginConf) error {
+	if !conf.Logging.Enable {
+		return nil
+	}
+
+	if conf.Logging.Directory == "" {
+		conf.Logging.Directory = "/var/log/cni"
+	}
+
+	currentDate := time.Now().Format("2006-01-02")
+	logFileName := fmt.Sprintf("%s/outbound-%s.log", strings.TrimSuffix(conf.Logging.Directory, "/"), currentDate)
+
+	file, err := os.OpenFile(logFileName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open log file: %v", err)
+	}
+
+	opts := slog.HandlerOptions{
+		AddSource: true,
+		Level:     slog.LevelInfo,
+	}
+	handler := slog.NewJSONHandler(file, &opts)
+	logger = slog.New(handler)
+	return nil
+}
+
+// parsePrevResult checks if `RawPrevResult` is present and converts it to `current.Result`.
+func parsePrevResult(conf *PluginConf) error {
+	if conf.RawPrevResult == nil {
+		return nil // Nothing to parse
+	}
+	if err := version.ParsePrevResult(&conf.NetConf); err != nil {
+		logger.Log(context.Background(), slog.LevelError,
+			"Could not parse prevResult",
+			getLogAttrs(),
+			slog.Any("error", err),
+		)
+		return fmt.Errorf("could not parse prevResult: %v", err)
+	}
+
+	result, err := current.NewResultFromResult(conf.PrevResult)
+	if err != nil {
+		logger.Log(context.Background(), slog.LevelError,
+			"Failed to convert prevResult to current.Result",
+			getLogAttrs(),
+			slog.Any("error", err),
+		)
+		return fmt.Errorf("failed to convert prevResult to current.Result: %v", err)
+	}
+
+	if len(result.Interfaces) == 0 {
+		return fmt.Errorf("invalid prevResult structure: missing interfaces")
+	}
+	if len(result.IPs) == 0 {
+		return fmt.Errorf("invalid prevResult structure: missing ips")
+	}
+	conf.PrevResult = result
+	return nil
+}
+
+// applyAdditionalRules merges any additional rules and metadata from CNI args into the config.
+func applyAdditionalRules(conf *PluginConf, additionalRules []iptables.OutboundRule, argsMetadata map[string]string) {
+	if len(argsMetadata) > 0 && conf.Metadata == nil {
+		conf.Metadata = make(map[string]string)
+	}
+	if len(additionalRules) > 0 {
+		logger.Log(context.Background(), slog.LevelInfo,
+			"Appending additional rules",
+			getLogAttrs(),
+			slog.Int("ruleCount", len(additionalRules)),
+		)
+		conf.OutboundRules = append(conf.OutboundRules, additionalRules...)
+	}
+	if len(argsMetadata) > 0 {
+		maps.Copy(conf.Metadata, argsMetadata)
+		maps.Copy(metadata, conf.Metadata)
+	}
+}
+
+// parseConfig is the main entry for reading stdin config + CNI_ARGS.
+// It delegates to smaller helper functions for clarity.
+func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
+	additionalRules, argsMetadata, err := parseArgs(args)
+	if err != nil {
+		return nil, err
+	}
+
+	conf, err := readJSONConfig(stdin)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := setupPluginLogging(conf); err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to setup logging",
 			getLogAttrs(),
@@ -199,58 +265,11 @@ func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 		getLogAttrs(),
 	)
 
-	// Parse prevResult if it exists
-	if conf.RawPrevResult != nil {
-		if err := version.ParsePrevResult(&conf.NetConf); err != nil {
-			logger.Log(context.Background(), slog.LevelError,
-				"Could not parse prevResult",
-				getLogAttrs(),
-				slog.Any("error", err),
-			)
-			return nil, fmt.Errorf("could not parse prevResult: %v", err)
-		}
-
-		result, err := current.NewResultFromResult(conf.PrevResult)
-		if err != nil {
-			logger.Log(context.Background(), slog.LevelError,
-				"Failed to convert prevResult to current.Result",
-				getLogAttrs(),
-				slog.Any("error", err),
-			)
-			return nil, fmt.Errorf("failed to convert prevResult to current.Result: %v", err)
-		}
-
-		if len(result.Interfaces) == 0 {
-			return nil, fmt.Errorf("invalid prevResult structure: missing interfaces")
-		}
-
-		if len(result.IPs) == 0 {
-			return nil, fmt.Errorf("invalid prevResult structure: missing ips")
-		}
-
-		conf.PrevResult = result
+	if err := parsePrevResult(conf); err != nil {
+		return nil, err
 	}
 
-	// Initialize metadata map only if we have metadata to add
-	if len(argsMetadata) > 0 && conf.Metadata == nil {
-		conf.Metadata = make(map[string]string)
-	}
-
-	// Add rules from args if any exist
-	if len(additionalRules) > 0 {
-		logger.Log(context.Background(), slog.LevelInfo,
-			"Appending additional rules",
-			getLogAttrs(),
-			slog.Int("ruleCount", len(additionalRules)),
-		)
-		conf.OutboundRules = append(conf.OutboundRules, additionalRules...)
-	}
-
-	// Merge metadata from args only if we have metadata
-	if len(argsMetadata) > 0 {
-		maps.Copy(conf.Metadata, argsMetadata)
-		maps.Copy(metadata, conf.Metadata)
-	}
+	applyAdditionalRules(conf, additionalRules, argsMetadata)
 
 	// Set defaults if needed
 	if conf.MainChainName == "" {
@@ -260,7 +279,6 @@ func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 		)
 		conf.MainChainName = "CNI-OUTBOUND"
 	}
-
 	if conf.DefaultAction == "" {
 		logger.Log(context.Background(), slog.LevelInfo,
 			"Using default DefaultAction: DROP",
@@ -269,7 +287,7 @@ func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
 		conf.DefaultAction = "DROP"
 	}
 
-	return &conf, nil
+	return conf, nil
 }
 
 func cmdAdd(args *skel.CmdArgs) error {
@@ -357,17 +375,15 @@ func cmdAdd(args *skel.CmdArgs) error {
 	}
 
 	logger.Log(context.Background(), slog.LevelInfo,
-		"Adding jump rule to main chain",
+		"Adding jump rule(s) to main chain for each IPv4",
 		getLogAttrs(),
 	)
 
-	var result *current.Result
+	// We must have at least one IP from prevResult
 	if conf.PrevResult == nil {
-		// If there's no previous result, return an error
 		return fmt.Errorf("no prevResult found")
 	}
-
-	result, err = current.NewResultFromResult(conf.PrevResult)
+	result, err := current.NewResultFromResult(conf.PrevResult)
 	if err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to parse prevResult",
@@ -377,20 +393,37 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("failed to parse prevResult: %v", err)
 	}
 
-	containerIP := result.IPs[0].Address.IP.String()
-	logger.Log(context.Background(), slog.LevelInfo,
-		"Container IP obtained",
-		getLogAttrs(),
-		slog.String("ip", containerIP),
-	)
+	var foundAnyIPv4 bool
+	for _, ipInfo := range result.IPs {
+		ipv4Addr := ipInfo.Address.IP.To4()
+		if ipv4Addr == nil {
+			continue
+		}
+		foundAnyIPv4 = true
+		containerIP := ipv4Addr.String()
 
-	if err := iptManager.AddJumpRule(containerIP, containerChain); err != nil {
-		logger.Log(context.Background(), slog.LevelError,
-			"Failed to add jump rule to main chain",
+		logger.Log(context.Background(), slog.LevelInfo,
+			"Container IPv4 obtained",
 			getLogAttrs(),
-			slog.Any("error", err),
+			slog.String("ip", containerIP),
 		)
-		return fmt.Errorf("failed to add jump rule to main chain: %v", err)
+
+		if err := iptManager.AddJumpRule(containerIP, containerChain); err != nil {
+			logger.Log(context.Background(), slog.LevelError,
+				"Failed to add jump rule to main chain",
+				getLogAttrs(),
+				slog.Any("error", err),
+			)
+			return fmt.Errorf("failed to add jump rule to main chain: %v", err)
+		}
+	}
+
+	if !foundAnyIPv4 {
+		logger.Log(context.Background(), slog.LevelError,
+			"No IPv4 addresses found in prevResult",
+			getLogAttrs(),
+		)
+		return fmt.Errorf("no IPv4 addresses found in prevResult")
 	}
 
 	logger.Log(context.Background(), slog.LevelInfo,
@@ -571,6 +604,7 @@ func cmdCheck(args *skel.CmdArgs) error {
 	return nil
 }
 
+// main is the plugin entry point.
 func main() {
 	skel.PluginMain(cmdAdd, cmdCheck, cmdDel, version.All, bv.BuildString("outbound"))
 }
