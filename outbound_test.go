@@ -497,7 +497,7 @@ func TestCmdAdd(t *testing.T) {
 	mockManager.On("AddJumpRule", "10.0.0.2", mock.Anything).Return(nil)
 
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return mockManager, nil
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -544,7 +544,7 @@ func TestCmdAddIPTablesManagerFailure(t *testing.T) {
 
 	// Override newIPTablesManager to return an error
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return nil, fmt.Errorf("failed to create IPTablesManager")
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -588,7 +588,7 @@ func TestCmdAddNoIPs(t *testing.T) {
 	mockManager := new(MockIPTablesManager)
 
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return mockManager, nil
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -646,7 +646,7 @@ func TestCmdAddEnsureMainChainExistsFailure(t *testing.T) {
 	mockManager.On("EnsureMainChainExists").Return(fmt.Errorf("failed to create main chain"))
 
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return mockManager, nil
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -706,7 +706,7 @@ func TestCmdAddEnsureCreateContainerChainFailure(t *testing.T) {
 	mockManager.On("CreateContainerChain", mock.Anything).Return(fmt.Errorf("failed to create container chain"))
 
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return mockManager, nil
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -773,7 +773,7 @@ func TestCmdAddRuleFailure(t *testing.T) {
 	})).Return(fmt.Errorf("failed to add rule"))
 
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return mockManager, nil
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -812,7 +812,7 @@ func TestCmdAddNoPrevResult(t *testing.T) {
 
 	// Override newIPTablesManager
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return mockManager, nil
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -871,7 +871,7 @@ func TestCmdAddJumpRuleFailure(t *testing.T) {
 	mockManager.On("AddJumpRule", "10.0.0.2", mock.Anything).Return(fmt.Errorf("failed to add jump rule"))
 
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return mockManager, nil
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -909,7 +909,7 @@ func TestCmdDel(t *testing.T) {
 	mockManager.On("ClearAndDeleteChain", mock.Anything).Return(nil)
 
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return mockManager, nil
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -941,7 +941,7 @@ func TestCmdDelParseConfigError(t *testing.T) {
 	mockManager := new(MockIPTablesManager)
 
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return mockManager, nil
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -974,7 +974,7 @@ func TestCmdDelRemoveJumpRuleByTargetChainError(t *testing.T) {
 	mockManager.On("ClearAndDeleteChain", mock.Anything).Return(nil)
 
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return mockManager, nil
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -1021,7 +1021,7 @@ func TestCmdDelIPTablesManagerFailure(t *testing.T) {
 
 	// Override newIPTablesManager to return an error
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return nil, fmt.Errorf("failed to create IPTablesManager")
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -1054,7 +1054,7 @@ func TestCmdDelClearAndDeleteChainError(t *testing.T) {
 	mockManager.On("ClearAndDeleteChain", mock.Anything).Return(fmt.Errorf("failed to clear and delete chain"))
 
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return mockManager, nil
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -1091,7 +1091,7 @@ func TestCmdCheck(t *testing.T) {
 	mockManager.On("VerifyRules", mock.Anything, mock.Anything).Return(nil)
 
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return mockManager, nil
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -1135,7 +1135,7 @@ func TestCmdCheckWithMetadata(t *testing.T) {
 	mockManager.On("VerifyRules", mock.Anything, mock.Anything).Return(nil)
 
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return mockManager, nil
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -1166,7 +1166,7 @@ func TestCmdCheckNewIPTablesManagerFailure(t *testing.T) {
 	}
 
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return nil, fmt.Errorf("failed to create IPTablesManager")
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -1198,7 +1198,7 @@ func TestCmdCheckChainExistsFailureForMainChain(t *testing.T) {
 	mockManager.On("ChainExists", "TEST-OUTBOUND").Return(false, nil)
 
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return mockManager, nil
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -1235,7 +1235,7 @@ func TestCmdCheckChainExistsFailure(t *testing.T) {
 
 	// Override newIPTablesManager
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return mockManager, nil
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -1278,7 +1278,7 @@ func TestCmdCheckContainerChainExistsFailure(t *testing.T) {
 
 	// Override newIPTablesManager
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return mockManager, nil
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -1314,7 +1314,7 @@ func TestCmdCheckChainExistsFailureForContainerChain(t *testing.T) {
 	mockManager.On("ChainExists", mock.Anything).Return(false, nil)
 
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return mockManager, nil
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -1352,7 +1352,7 @@ func TestCmdCheckVerifyRulesFailure(t *testing.T) {
 	mockManager.On("VerifyRules", mock.Anything, mock.Anything).Return(fmt.Errorf("rule verification failed"))
 
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return mockManager, nil
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -1400,7 +1400,7 @@ func TestCmdCheckIPTablesManagerFailure(t *testing.T) {
 
 	// Override newIPTablesManager to return an error
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return nil, fmt.Errorf("failed to create IPTablesManager")
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -1432,7 +1432,7 @@ func TestCmdCheckParseConfigError(t *testing.T) {
 	mockManager := new(MockIPTablesManager)
 
 	origNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return mockManager, nil
 	}
 	defer func() { newIPTablesManager = origNewIPTablesManager }()
@@ -1642,12 +1642,6 @@ func TestParseArgsWithLogging(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestGenerateChainName(t *testing.T) {
-	chainName := generateChainName("test-net", "test-container")
-	assert.NotEmpty(t, chainName)
-	assert.Contains(t, chainName, "OUT-")
 }
 
 func TestParseArgs(t *testing.T) {
@@ -1981,7 +1975,7 @@ func TestCmdAdd_FailedToParsePrevResult(t *testing.T) {
 
 	// 3. We mock newIPTablesManager if needed or just let the plugin create a no-op
 	originalNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		// Return a mock or a no-op manager so we don't fail on iptables calls
 		return &mockNoOpManager{}, nil
 	}
@@ -2033,7 +2027,7 @@ func TestCmdAdd_NoIPv4Addresses(t *testing.T) {
 	// If we actually create an iptables manager, it won't matter because
 	// we'll fail before we call iptables methods. But we can still override:
 	originalNewIPTablesManager := newIPTablesManager
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
 		return &mockNoOpManager{}, nil
 	}
 	defer func() { newIPTablesManager = originalNewIPTablesManager }()

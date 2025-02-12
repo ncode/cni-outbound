@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/containernetworking/plugins/pkg/utils"
 	"io"
 	"log/slog"
 	"maps"
@@ -15,7 +16,6 @@ import (
 	"github.com/containernetworking/cni/pkg/types"
 	current "github.com/containernetworking/cni/pkg/types/100"
 	"github.com/containernetworking/cni/pkg/version"
-	"github.com/containernetworking/plugins/pkg/utils"
 	bv "github.com/containernetworking/plugins/pkg/utils/buildversion"
 	"github.com/ncode/cni-outbound/pkg/iptables"
 )
@@ -43,8 +43,8 @@ var (
 	// logger is the structured logger instance used throughout the plugin.
 	logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	// newIPTablesManager is a function pointer for creating an IPTablesManager (for mocking in tests).
-	newIPTablesManager = func(conf *PluginConf) (iptables.Manager, error) {
-		return iptables.NewIPTablesManager(conf.MainChainName, conf.DefaultAction, conf.DryRun, conf.LogDrops)
+	newIPTablesManager = func(conf *PluginConf, logIdentifier string) (iptables.Manager, error) {
+		return iptables.NewIPTablesManager(conf.MainChainName, conf.DefaultAction, logIdentifier, conf.DryRun, conf.LogDrops)
 	}
 	// metadata is used to store logging metadata (e.g., container ID).
 	metadata = map[string]string{}
@@ -59,11 +59,6 @@ func getLogAttrs() slog.Attr {
 		}
 	}
 	return slog.Group("metadata", attrs...)
-}
-
-// generateChainName creates a short but unique chain name using a prefix and the container ID.
-func generateChainName(netName, containerID string) string {
-	return utils.MustFormatChainNameWithPrefix(netName, containerID, "OUT-")
 }
 
 // parseArgs extracts additional outbound rules and metadata from CNI_ARGS.
@@ -314,7 +309,8 @@ func cmdAdd(args *skel.CmdArgs) error {
 		getLogAttrs(),
 	)
 
-	iptManager, err := newIPTablesManager(conf)
+	containerChain := utils.MustFormatChainNameWithPrefix(conf.Name, args.ContainerID, "OUT-")
+	iptManager, err := newIPTablesManager(conf, strings.Replace(containerChain, "CNI-OUT-", "", -1))
 	if err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to create IPTablesManager",
@@ -343,7 +339,6 @@ func cmdAdd(args *skel.CmdArgs) error {
 		getLogAttrs(),
 	)
 
-	containerChain := generateChainName(conf.Name, args.ContainerID)
 	if err := iptManager.CreateContainerChain(containerChain); err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to create container chain",
@@ -457,7 +452,8 @@ func cmdDel(args *skel.CmdArgs) error {
 		getLogAttrs(),
 	)
 
-	iptManager, err := newIPTablesManager(conf)
+	containerChain := utils.MustFormatChainNameWithPrefix(conf.Name, args.ContainerID, "OUT-")
+	iptManager, err := newIPTablesManager(conf, strings.Replace(containerChain, "CNI-OUT-", "", -1))
 	if err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to create IPTablesManager",
@@ -472,7 +468,6 @@ func cmdDel(args *skel.CmdArgs) error {
 		getLogAttrs(),
 	)
 
-	containerChain := generateChainName(conf.Name, args.ContainerID)
 	if err := iptManager.RemoveJumpRuleByTargetChain(containerChain); err != nil {
 		logger.Log(context.Background(), slog.LevelWarn,
 			"Failed to remove jump rule from main chain",
@@ -526,7 +521,8 @@ func cmdCheck(args *skel.CmdArgs) error {
 		getLogAttrs(),
 	)
 
-	iptManager, err := newIPTablesManager(conf)
+	containerChain := utils.MustFormatChainNameWithPrefix(conf.Name, args.ContainerID, "OUT-")
+	iptManager, err := newIPTablesManager(conf, strings.Replace(containerChain, "CNI-OUT-", "", -1))
 	if err != nil {
 		logger.Log(context.Background(), slog.LevelError,
 			"Failed to create IPTablesManager",
@@ -564,7 +560,6 @@ func cmdCheck(args *skel.CmdArgs) error {
 		getLogAttrs(),
 	)
 
-	containerChain := generateChainName(conf.Name, args.ContainerID)
 	exists, err = iptManager.ChainExists(containerChain)
 	if err != nil {
 		logger.Log(context.Background(), slog.LevelError,
