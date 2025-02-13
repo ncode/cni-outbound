@@ -7,6 +7,8 @@ import (
 	"github.com/coreos/go-iptables/iptables"
 )
 
+const table = "filter"
+
 // OutboundRule describes a basic firewall rule: host, protocol, port, and the action (ACCEPT/DROP).
 type OutboundRule struct {
 	Host   string
@@ -45,6 +47,7 @@ type IPTablesManager struct {
 	ipt           IPTablesWrapper
 	mainChainName string
 	defaultAction string
+	logIdentifier string
 	dryRun        bool
 	logDrops      bool
 }
@@ -55,7 +58,7 @@ var newIPTables = func() (IPTablesWrapper, error) {
 }
 
 // NewIPTablesManager constructs the IPTablesManager with the specified main chain, default action, etc.
-func NewIPTablesManager(mainChainName, defaultAction string, dryRun, logDrops bool) (Manager, error) {
+func NewIPTablesManager(mainChainName, defaultAction, logIdentifier string, dryRun, logDrops bool) (Manager, error) {
 	ipt, err := newIPTables()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize iptables: %v", err)
@@ -72,6 +75,7 @@ func NewIPTablesManager(mainChainName, defaultAction string, dryRun, logDrops bo
 		ipt:           ipt,
 		mainChainName: mainChainName,
 		defaultAction: defaultAction,
+		logIdentifier: logIdentifier,
 		dryRun:        dryRun,
 		logDrops:      logDrops,
 	}, nil
@@ -79,66 +83,63 @@ func NewIPTablesManager(mainChainName, defaultAction string, dryRun, logDrops bo
 
 // EnsureMainChainExists creates the main chain if it doesn't exist and inserts a jump in CNI-FORWARD.
 func (m *IPTablesManager) EnsureMainChainExists() error {
-	exists, err := m.ipt.ChainExists("filter", m.mainChainName)
+	exists, err := m.ipt.ChainExists(table, m.mainChainName)
 	if err != nil {
 		return fmt.Errorf("failed to check main chain existence: %v", err)
 	}
 	if !exists {
-		if err := m.ipt.NewChain("filter", m.mainChainName); err != nil {
+		if err := m.ipt.NewChain(table, m.mainChainName); err != nil {
 			return fmt.Errorf("failed to create main chain: %v", err)
 		}
 	}
 
 	// Remove any previous jump rule (just in case)
-	_ = m.ipt.Delete("filter", "CNI-FORWARD", "-j", m.mainChainName)
+	_ = m.ipt.Delete(table, "CNI-FORWARD", "-j", m.mainChainName)
 
 	// Insert jump to the main chain at the top of CNI-FORWARD.
-	if err := m.ipt.Insert("filter", "CNI-FORWARD", 1, "-j", m.mainChainName); err != nil {
+	if err := m.ipt.Insert(table, "CNI-FORWARD", 1, "-j", m.mainChainName); err != nil {
 		return fmt.Errorf("failed to add jump to main chain in CNI-FORWARD: %v", err)
 	}
 	return nil
 }
 
+// buildDefaultActionSpecs returns the iptables rule specs for the container chain's “final” default action.
+// This consolidates all logic for dry-run, logging, and drop/accept in one place.
+func (m *IPTablesManager) buildDefaultActionSpecs() [][]string {
+	if m.dryRun {
+		// In dry-run mode, we LOG (with defaultAction name) and then ACCEPT
+		return [][]string{
+			{"-j", "LOG", "--log-prefix", fmt.Sprintf("%s_%s ", m.defaultAction, m.logIdentifier)},
+			{"-j", "ACCEPT"},
+		}
+	} else if strings.EqualFold(m.defaultAction, "DROP") && m.logDrops {
+		// Normal mode, but defaultAction=DROP and logDrops=true => LOG then DROP
+		return [][]string{
+			{"-j", "LOG", "--log-prefix", fmt.Sprintf("%s_%s ", m.defaultAction, m.logIdentifier)},
+			{"-j", "DROP"},
+		}
+	}
+	// Otherwise, just a single rule with the default action (DROP or ACCEPT, no logging).
+	return [][]string{
+		{"-j", m.defaultAction},
+	}
+}
+
 // CreateContainerChain makes a new chain for a specific container and sets up default rules.
 func (m *IPTablesManager) CreateContainerChain(containerChain string) error {
-	if err := m.ipt.NewChain("filter", containerChain); err != nil {
+	if err := m.ipt.NewChain(table, containerChain); err != nil {
 		return fmt.Errorf("failed to create container chain: %v", err)
 	}
 
 	// Accept related and established connections first
-	if err := m.ipt.Append("filter", containerChain,
+	if err := m.ipt.Append(table, containerChain,
 		"-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"); err != nil {
 		return fmt.Errorf("failed to add RELATED,ESTABLISHED rule: %v", err)
 	}
 
-	if m.dryRun {
-		// In dry-run mode, log anything that would otherwise hit defaultAction,
-		// and then ACCEPT instead of dropping.
-		logSpec := []string{
-			"-j", "LOG",
-			"--log-prefix", fmt.Sprintf(`"[CNI-OUTBOUND-%s-%s]"`, containerChain, m.defaultAction),
-		}
-		if err := m.ipt.Append("filter", containerChain, logSpec...); err != nil {
-			return fmt.Errorf("failed to add default action logging rule: %v", err)
-		}
-		// Dry-run => final action is ACCEPT
-		if err := m.ipt.Append("filter", containerChain, "-j", "ACCEPT"); err != nil {
-			return fmt.Errorf("failed to set default action for container chain: %v", err)
-		}
-	} else {
-		// Normal (non-dry-run) mode
-		if strings.EqualFold(m.defaultAction, "DROP") && m.logDrops {
-			// Log before the drop
-			logSpec := []string{
-				"-j", "LOG",
-				"--log-prefix", fmt.Sprintf(`"[CNI-OUTBOUND-%s-DEFAULT-BLOCKED]"`, containerChain),
-			}
-			if err := m.ipt.Append("filter", containerChain, logSpec...); err != nil {
-				return fmt.Errorf("failed to add default DROP logging rule: %v", err)
-			}
-		}
-		// Now append the final default action rule (DROP, ACCEPT, etc.)
-		if err := m.ipt.Append("filter", containerChain, "-j", m.defaultAction); err != nil {
+	// Now append the default action rule(s)
+	for _, spec := range m.buildDefaultActionSpecs() {
+		if err := m.ipt.Append(table, containerChain, spec...); err != nil {
 			return fmt.Errorf("failed to set default action for container chain: %v", err)
 		}
 	}
@@ -147,7 +148,7 @@ func (m *IPTablesManager) CreateContainerChain(containerChain string) error {
 }
 
 // buildRuleSpecs prepares the iptables arguments for a single OutboundRule.
-func (m *IPTablesManager) buildRuleSpecs(chainName, host, proto, port, action string) [][]string {
+func (m *IPTablesManager) buildRuleSpecs(host, proto, port, action string) [][]string {
 	// Common rule spec
 	baseSpec := []string{"-d", host, "-p", proto, "--dport", port}
 
@@ -155,7 +156,7 @@ func (m *IPTablesManager) buildRuleSpecs(chainName, host, proto, port, action st
 	if m.dryRun {
 		return [][]string{
 			append(append([]string{}, baseSpec...), "-j", "LOG", "--log-prefix",
-				fmt.Sprintf(`"[CNI-OUTBOUND-%s-ACCEPTED]"`, chainName)),
+				fmt.Sprintf("%s_%s ", action, m.logIdentifier)),
 			append(append([]string{}, baseSpec...), "-j", "ACCEPT"),
 		}
 	}
@@ -164,7 +165,7 @@ func (m *IPTablesManager) buildRuleSpecs(chainName, host, proto, port, action st
 	if m.logDrops && strings.EqualFold(action, "DROP") {
 		return [][]string{
 			append(append([]string{}, baseSpec...), "-j", "LOG", "--log-prefix",
-				fmt.Sprintf(`"[CNI-OUTBOUND-%s-BLOCKED]"`, chainName)),
+				fmt.Sprintf("%s_%s ", action, m.logIdentifier)),
 			append(append([]string{}, baseSpec...), "-j", "DROP"),
 		}
 	}
@@ -177,11 +178,11 @@ func (m *IPTablesManager) buildRuleSpecs(chainName, host, proto, port, action st
 
 // AddRule inserts a new rule (or rules) into the chain.
 func (m *IPTablesManager) AddRule(chainName string, rule OutboundRule) error {
-	ruleSpecs := m.buildRuleSpecs(chainName, rule.Host, rule.Proto, rule.Port, rule.Action)
+	ruleSpecs := m.buildRuleSpecs(rule.Host, rule.Proto, rule.Port, rule.Action)
 
 	// Insert each spec at position 1 in reverse order so they appear in the chain in the correct sequence
 	for i := len(ruleSpecs) - 1; i >= 0; i-- {
-		if err := m.ipt.Insert("filter", chainName, 1, ruleSpecs[i]...); err != nil {
+		if err := m.ipt.Insert(table, chainName, 1, ruleSpecs[i]...); err != nil {
 			return fmt.Errorf("failed to add rule: %v", err)
 		}
 	}
@@ -190,12 +191,12 @@ func (m *IPTablesManager) AddRule(chainName string, rule OutboundRule) error {
 
 // AddJumpRule appends a jump from the main chain to the container chain for the given source IP.
 func (m *IPTablesManager) AddJumpRule(sourceIP, targetChain string) error {
-	return m.ipt.Append("filter", m.mainChainName, "-s", sourceIP, "-j", targetChain)
+	return m.ipt.Append(table, m.mainChainName, "-s", sourceIP, "-j", targetChain)
 }
 
 // RemoveJumpRule deletes a jump rule referencing the targetChain for the given source IP.
 func (m *IPTablesManager) RemoveJumpRule(sourceIP, targetChain string) error {
-	if err := m.ipt.Delete("filter", m.mainChainName, "-s", sourceIP, "-j", targetChain); err != nil {
+	if err := m.ipt.Delete(table, m.mainChainName, "-s", sourceIP, "-j", targetChain); err != nil {
 		return fmt.Errorf("failed to remove jump rule: %v", err)
 	}
 	return nil
@@ -203,7 +204,7 @@ func (m *IPTablesManager) RemoveJumpRule(sourceIP, targetChain string) error {
 
 // RemoveJumpRuleByTargetChain does a more robust token-based matching to avoid partial strings.
 func (m *IPTablesManager) RemoveJumpRuleByTargetChain(targetChain string) error {
-	rules, err := m.ipt.List("filter", m.mainChainName)
+	rules, err := m.ipt.List(table, m.mainChainName)
 	if err != nil {
 		return fmt.Errorf("failed to list rules in main chain: %v", err)
 	}
@@ -217,7 +218,7 @@ func (m *IPTablesManager) RemoveJumpRuleByTargetChain(targetChain string) error 
 				// Found the rule referencing the targetChain
 				// We also skip the first two tokens ("-A" <chainname>) when calling Delete
 				toDelete := tokens[2:]
-				if err := m.ipt.Delete("filter", m.mainChainName, toDelete...); err != nil {
+				if err := m.ipt.Delete(table, m.mainChainName, toDelete...); err != nil {
 					return fmt.Errorf("failed to remove jump rule: %v", err)
 				}
 				return nil
@@ -230,10 +231,10 @@ func (m *IPTablesManager) RemoveJumpRuleByTargetChain(targetChain string) error 
 
 // ClearAndDeleteChain first clears all rules from the chain, then deletes it.
 func (m *IPTablesManager) ClearAndDeleteChain(chainName string) error {
-	if err := m.ipt.ClearChain("filter", chainName); err != nil {
+	if err := m.ipt.ClearChain(table, chainName); err != nil {
 		return fmt.Errorf("failed to clear chain %s: %v", chainName, err)
 	}
-	if err := m.ipt.DeleteChain("filter", chainName); err != nil {
+	if err := m.ipt.DeleteChain(table, chainName); err != nil {
 		return fmt.Errorf("failed to delete chain %s: %v", chainName, err)
 	}
 	return nil
@@ -241,12 +242,12 @@ func (m *IPTablesManager) ClearAndDeleteChain(chainName string) error {
 
 // ChainExists checks whether the chain is present.
 func (m *IPTablesManager) ChainExists(chainName string) (bool, error) {
-	return m.ipt.ChainExists("filter", chainName)
+	return m.ipt.ChainExists(table, chainName)
 }
 
 // VerifyRules verifies that each of the plugin's rules (and default actions) exist in iptables.
 func (m *IPTablesManager) VerifyRules(chainName string, rules []OutboundRule) error {
-	existingRules, err := m.ipt.List("filter", chainName)
+	existingRules, err := m.ipt.List(table, chainName)
 	if err != nil {
 		return err
 	}
@@ -261,19 +262,24 @@ func (m *IPTablesManager) VerifyRules(chainName string, rules []OutboundRule) er
 		}
 	}
 
-	// In dry run mode, we also expect a default logging rule
+	// Check for default rules if we're in dry-run mode:
+	// (You could similarly check in all modes, but this preserves existing behavior.)
 	if m.dryRun {
-		defaultLogLine := fmt.Sprintf("-A %s -j LOG --log-prefix [CNI-OUTBOUND-DEFAULT-%s]", chainName, m.defaultAction)
-		if !lineExistsInIptablesList(defaultLogLine, existingRules) {
-			return fmt.Errorf("default action logging rule not found")
+		defaultActionSpecs := m.buildDefaultActionSpecs()
+		for _, spec := range defaultActionSpecs {
+			expected := "-A " + chainName + " " + strings.Join(spec, " ")
+			if !lineExistsInIptablesList(expected, existingRules) {
+				return fmt.Errorf("default rule not found: %s", expected)
+			}
 		}
 	}
+
 	return nil
 }
 
 // buildExpectedRuleLines constructs the lines we'll look for in `iptables -S <chain>` output.
 func (m *IPTablesManager) buildExpectedRuleLines(chainName, host, proto, port, action string) []string {
-	specs := m.buildRuleSpecs(chainName, host, proto, port, action)
+	specs := m.buildRuleSpecs(host, proto, port, action)
 	lines := make([]string, 0, len(specs))
 	for _, s := range specs {
 		// iptables -S lines typically: "-A <chain> <args>..."
