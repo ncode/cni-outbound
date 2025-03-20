@@ -685,6 +685,132 @@ func TestVerifyRules(t *testing.T) {
 	}
 }
 
+func TestVerifyDefaultRules(t *testing.T) {
+	testCases := []struct {
+		name           string
+		chainName      string
+		existingRules  []string
+		defaultAction  string
+		dryRun         bool
+		logDrops       bool
+		logIdentifier  string
+		expectError    bool
+		expectedErrMsg string
+	}{
+		{
+			name:          "DryRun mode - all rules present",
+			chainName:     "TEST_CHAIN",
+			defaultAction: "DROP",
+			dryRun:        true,
+			logIdentifier: "test_id",
+			existingRules: []string{
+				"-A TEST_CHAIN -j LOG --log-prefix DROP_test_id ",
+				"-A TEST_CHAIN -j ACCEPT", // In dry run, final action is ACCEPT
+			},
+			expectError: false,
+		},
+		{
+			name:          "DryRun mode - missing LOG rule",
+			chainName:     "TEST_CHAIN",
+			defaultAction: "DROP",
+			dryRun:        true,
+			logIdentifier: "test_id",
+			existingRules: []string{
+				// Missing LOG rule
+				"-A TEST_CHAIN -j ACCEPT",
+			},
+			expectError:    true,
+			expectedErrMsg: "default rule not found: -A TEST_CHAIN -j LOG --log-prefix DROP_test_id ",
+		},
+		{
+			name:          "DryRun mode - missing ACCEPT rule",
+			chainName:     "TEST_CHAIN",
+			defaultAction: "DROP",
+			dryRun:        true,
+			logIdentifier: "test_id",
+			existingRules: []string{
+				"-A TEST_CHAIN -j LOG --log-prefix DROP_test_id ",
+				// Missing ACCEPT rule
+			},
+			expectError:    true,
+			expectedErrMsg: "default rule not found: -A TEST_CHAIN -j ACCEPT",
+		},
+		{
+			name:          "Normal mode with logDrops - correct rules",
+			chainName:     "TEST_CHAIN",
+			defaultAction: "DROP",
+			dryRun:        false,
+			logDrops:      true,
+			logIdentifier: "test_id",
+			existingRules: []string{
+				"-A TEST_CHAIN -j LOG --log-prefix DROP_test_id ",
+				"-A TEST_CHAIN -j DROP",
+			},
+			expectError: false,
+		},
+		{
+			name:          "Normal mode with logDrops - missing LOG rule",
+			chainName:     "TEST_CHAIN",
+			defaultAction: "DROP",
+			dryRun:        false,
+			logDrops:      true,
+			logIdentifier: "test_id",
+			existingRules: []string{
+				// Missing LOG rule
+				"-A TEST_CHAIN -j DROP",
+			},
+			expectError:    true,
+			expectedErrMsg: "default rule not found: -A TEST_CHAIN -j LOG --log-prefix DROP_test_id ",
+		},
+		{
+			name:          "Normal mode without logDrops - only action rule needed",
+			chainName:     "TEST_CHAIN",
+			defaultAction: "DROP",
+			dryRun:        false,
+			logDrops:      false,
+			logIdentifier: "test_id",
+			existingRules: []string{
+				"-A TEST_CHAIN -j DROP",
+			},
+			expectError: false,
+		},
+		{
+			name:          "ACCEPT default action with dryRun - should log then accept",
+			chainName:     "TEST_CHAIN",
+			defaultAction: "ACCEPT",
+			dryRun:        true,
+			logIdentifier: "test_id",
+			existingRules: []string{
+				"-A TEST_CHAIN -j LOG --log-prefix ACCEPT_test_id ",
+				"-A TEST_CHAIN -j ACCEPT",
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := &IPTablesManager{
+				defaultAction: tc.defaultAction,
+				dryRun:        tc.dryRun,
+				logDrops:      tc.logDrops,
+				logIdentifier: tc.logIdentifier,
+			}
+
+			err := manager.verifyDefaultRules(tc.chainName, tc.existingRules)
+
+			if tc.expectError {
+				assert.Error(t, err)
+				if tc.expectedErrMsg != "" {
+					assert.Contains(t, err.Error(), tc.expectedErrMsg)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestCreateContainerChain_LogDropsNormalMode(t *testing.T) {
 	mockIpt := newMockIPTables()
 	manager := &IPTablesManager{
@@ -753,6 +879,89 @@ func TestAddJumpRule(t *testing.T) {
 	rules := mockIpt.rules["CNI-OUTBOUND"]
 	assert.Len(t, rules, 1)
 	assert.Contains(t, rules[0], "-s 10.0.0.1 -j CONTAINER_CHAIN")
+}
+
+func TestFindRuleWithJumpToChain(t *testing.T) {
+	testCases := []struct {
+		name        string
+		targetChain string
+		rules       []string
+		wantArgs    []string
+		wantFound   bool
+	}{
+		{
+			name:        "Empty rules",
+			targetChain: "TEST-CHAIN",
+			rules:       []string{},
+			wantArgs:    nil,
+			wantFound:   false,
+		},
+		{
+			name:        "No matching rule",
+			targetChain: "TEST-CHAIN",
+			rules: []string{
+				"-A MAIN-CHAIN -s 10.0.0.1 -j OTHER-CHAIN",
+				"-A MAIN-CHAIN -s 10.0.0.2 -j ANOTHER-CHAIN",
+			},
+			wantArgs:  nil,
+			wantFound: false,
+		},
+		{
+			name:        "Found matching rule",
+			targetChain: "TEST-CHAIN",
+			rules: []string{
+				"-A MAIN-CHAIN -s 10.0.0.1 -j OTHER-CHAIN",
+				"-A MAIN-CHAIN -s 10.0.0.2 -j TEST-CHAIN",
+				"-A MAIN-CHAIN -s 10.0.0.3 -j ANOTHER-CHAIN",
+			},
+			wantArgs:  []string{"-s", "10.0.0.2", "-j", "TEST-CHAIN"},
+			wantFound: true,
+		},
+		{
+			name:        "Found matching rule with complex arguments",
+			targetChain: "TEST-CHAIN",
+			rules: []string{
+				"-A MAIN-CHAIN -p tcp --dport 80 -m comment --comment 'HTTP traffic' -j TEST-CHAIN",
+			},
+			wantArgs:  []string{"-p", "tcp", "--dport", "80", "-m", "comment", "--comment", "'HTTP", "traffic'", "-j", "TEST-CHAIN"},
+			wantFound: true,
+		},
+		{
+			name:        "Multiple matches, should find first one",
+			targetChain: "TEST-CHAIN",
+			rules: []string{
+				"-A MAIN-CHAIN -s 10.0.0.1 -j TEST-CHAIN",
+				"-A MAIN-CHAIN -s 10.0.0.2 -j TEST-CHAIN",
+			},
+			wantArgs:  []string{"-s", "10.0.0.1", "-j", "TEST-CHAIN"},
+			wantFound: true,
+		},
+		{
+			name:        "Partial match in chain name (no false positives)",
+			targetChain: "TEST-CHAIN",
+			rules: []string{
+				"-A MAIN-CHAIN -s 10.0.0.1 -j TEST-CHAIN-EXTRA",
+				"-A MAIN-CHAIN -s 10.0.0.2 -j EXTRA-TEST-CHAIN",
+			},
+			wantArgs:  nil,
+			wantFound: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &IPTablesManager{mainChainName: "MAIN-CHAIN"}
+			gotArgs, gotFound := m.findRuleWithJumpToChain(tc.targetChain, tc.rules)
+
+			assert.Equal(t, tc.wantFound, gotFound, "Found status mismatch")
+
+			if tc.wantFound {
+				assert.Equal(t, tc.wantArgs, gotArgs, "Rule arguments mismatch")
+			} else {
+				assert.Nil(t, gotArgs, "Expected nil args when rule not found")
+			}
+		})
+	}
 }
 
 func TestRemoveJumpRuleError(t *testing.T) {
@@ -828,28 +1037,100 @@ func TestRemoveJumpRuleError(t *testing.T) {
 }
 
 func TestRemoveJumpRuleByTargetChain(t *testing.T) {
-	mockIpt := newMockIPTables()
-	manager := &IPTablesManager{
-		ipt:           mockIpt,
-		mainChainName: "CNI-OUTBOUND",
-		defaultAction: "DROP",
+	testCases := []struct {
+		name              string
+		targetChain       string
+		setupMock         func(*mockIPTables)
+		expectError       bool
+		expectedErrorText string
+		validateMock      func(*testing.T, *mockIPTables)
+	}{
+		{
+			name:        "Successfully remove jump rule",
+			targetChain: "TARGET_CHAIN",
+			setupMock: func(m *mockIPTables) {
+				m.chains["MAIN_CHAIN"] = true
+				m.rules["MAIN_CHAIN"] = []string{
+					"-A MAIN_CHAIN -s 10.0.0.1 -j TARGET_CHAIN",
+					"-A MAIN_CHAIN -s 10.0.0.2 -j OTHER_CHAIN",
+				}
+			},
+			expectError: false,
+			validateMock: func(t *testing.T, m *mockIPTables) {
+				// Ensure the rule was removed
+				for _, rule := range m.rules["MAIN_CHAIN"] {
+					assert.NotContains(t, rule, "TARGET_CHAIN", "The rule should have been removed")
+				}
+			},
+		},
+		{
+			name:        "Rule not found",
+			targetChain: "NONEXISTENT_CHAIN",
+			setupMock: func(m *mockIPTables) {
+				m.chains["MAIN_CHAIN"] = true
+				m.rules["MAIN_CHAIN"] = []string{
+					"-A MAIN_CHAIN -s 10.0.0.1 -j OTHER_CHAIN",
+				}
+			},
+			expectError:       true,
+			expectedErrorText: "jump rule for chain NONEXISTENT_CHAIN not found",
+			validateMock: func(t *testing.T, m *mockIPTables) {
+				// Ensure rules remain unchanged
+				assert.Len(t, m.rules["MAIN_CHAIN"], 1, "Rules should remain unchanged")
+			},
+		},
+		{
+			name:        "Error listing rules",
+			targetChain: "TARGET_CHAIN",
+			setupMock: func(m *mockIPTables) {
+				m.SetError("List", errors.New("mock list error"))
+			},
+			expectError:       true,
+			expectedErrorText: "failed to list rules in main chain: mock list error",
+			validateMock:      func(t *testing.T, m *mockIPTables) {},
+		},
+		{
+			name:        "Error deleting rule",
+			targetChain: "TARGET_CHAIN",
+			setupMock: func(m *mockIPTables) {
+				m.chains["MAIN_CHAIN"] = true
+				m.rules["MAIN_CHAIN"] = []string{
+					"-A MAIN_CHAIN -s 10.0.0.1 -j TARGET_CHAIN",
+				}
+				m.SetError("Delete", errors.New("mock delete error"))
+			},
+			expectError:       true,
+			expectedErrorText: "failed to remove jump rule: mock delete error",
+			validateMock: func(t *testing.T, m *mockIPTables) {
+				// Rules should remain unchanged because delete failed
+				assert.Len(t, m.rules["MAIN_CHAIN"], 1, "Rules should remain unchanged")
+			},
+		},
 	}
-	mockIpt.chains["CNI-OUTBOUND"] = true
 
-	// Add a jump rule
-	mockIpt.rules["CNI-OUTBOUND"] = []string{
-		"-A CNI-OUTBOUND -s 10.0.0.1 -j TARGET_CHAIN",
-		"-A CNI-OUTBOUND -s 10.0.0.2 -j OTHER_CHAIN",
-	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			mockIpt := newMockIPTables()
+			tc.setupMock(mockIpt)
 
-	// Remove it
-	err := manager.RemoveJumpRuleByTargetChain("TARGET_CHAIN")
-	assert.NoError(t, err, "RemoveJumpRuleByTargetChain should succeed")
+			manager := &IPTablesManager{
+				ipt:           mockIpt,
+				mainChainName: "MAIN_CHAIN",
+			}
 
-	// Verify removal
-	rules := mockIpt.rules["CNI-OUTBOUND"]
-	for _, r := range rules {
-		assert.False(t, strings.Contains(r, "TARGET_CHAIN"))
+			err := manager.RemoveJumpRuleByTargetChain(tc.targetChain)
+
+			if tc.expectError {
+				assert.Error(t, err)
+				if tc.expectedErrorText != "" {
+					assert.Contains(t, err.Error(), tc.expectedErrorText)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+
+			tc.validateMock(t, mockIpt)
+		})
 	}
 }
 
