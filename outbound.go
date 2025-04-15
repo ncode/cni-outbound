@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
@@ -50,6 +51,17 @@ var (
 	metadata = map[string]string{}
 )
 
+// logAndWrap logs an error and returns a formatted error
+func logAndWrap(ctx context.Context, msg string, err error) error {
+	// This is kinda weird, but I could not find a better way to capitalize only first word of a multi-word sentence to log
+	runes := []rune(msg)
+	if len(runes) > 0 {
+		runes[0] = unicode.ToUpper(runes[0])
+	}
+	logger.Log(ctx, slog.LevelError, string(runes), getLogAttrs(), slog.Any("error", err))
+	return fmt.Errorf("%s: %v", msg, err)
+}
+
 // getLogAttrs aggregates the contents of the global `metadata` map into a slog.Attr.
 func getLogAttrs() slog.Attr {
 	var attrs []any
@@ -62,21 +74,15 @@ func getLogAttrs() slog.Attr {
 }
 
 // parseArgs extracts additional outbound rules and metadata from CNI_ARGS.
-func parseArgs(args string) ([]iptables.OutboundRule, map[string]string, error) {
-	logger.Log(context.Background(), slog.LevelInfo,
-		"Parsing CNI arguments",
-		getLogAttrs(),
-		slog.String("details", args),
-	)
+func parseArgs(ctx context.Context, args string) ([]iptables.OutboundRule, map[string]string, error) {
+	logger.Log(ctx, slog.LevelInfo,
+		"Parsing CNI arguments", getLogAttrs(), slog.String("details", args))
 
 	metadata := make(map[string]string)
 	var additionalRules []iptables.OutboundRule
 
 	if args == "" {
-		logger.Log(context.Background(), slog.LevelInfo,
-			"No additional args provided",
-			getLogAttrs(),
-		)
+		logger.Log(ctx, slog.LevelInfo, "No additional args provided", getLogAttrs())
 		return nil, metadata, nil
 	}
 
@@ -99,55 +105,37 @@ func parseArgs(args string) ([]iptables.OutboundRule, map[string]string, error) 
 		if skipKeys[key] {
 			continue
 		} else if key == "outbound.additional_rules" {
-			logger.Log(context.Background(), slog.LevelInfo,
-				"Found outbound.additional_rules",
-				getLogAttrs(),
-				slog.String("rules", value),
-			)
+			logger.Log(ctx, slog.LevelInfo,
+				"Found outbound.additional_rules", getLogAttrs(), slog.String("rules", value))
 			if err := json.Unmarshal([]byte(value), &additionalRules); err != nil {
-				logger.Log(context.Background(), slog.LevelError,
-					"Failed to parse additional rules",
-					getLogAttrs(),
-					slog.Any("error", err),
-				)
-				return nil, nil, fmt.Errorf("failed to parse additional rules from CNI args: %v", err)
+				return nil, nil, logAndWrap(ctx, "failed to parse additional rules from CNI args", err)
 			}
 		} else {
 			metadata[key] = value
-			logger.Log(context.Background(), slog.LevelInfo,
-				"Found metadata",
-				getLogAttrs(),
-				slog.String("key", key),
-			)
+			logger.Log(ctx, slog.LevelInfo,
+				"Found metadata", getLogAttrs(), slog.String("key", key))
 		}
 	}
 
-	logger.Log(context.Background(), slog.LevelInfo,
-		"Parsed args",
-		getLogAttrs(),
+	logger.Log(ctx, slog.LevelInfo,
+		"Parsed args", getLogAttrs(),
 		slog.Int("ruleCount", len(additionalRules)),
-		slog.Int("metadataCount", len(metadata)),
-	)
+		slog.Int("metadataCount", len(metadata)))
 
 	return additionalRules, metadata, nil
 }
 
 // readJSONConfig unmarshals the plugin config from stdin JSON.
-func readJSONConfig(stdin []byte) (*PluginConf, error) {
+func readJSONConfig(ctx context.Context, stdin []byte) (*PluginConf, error) {
 	conf := &PluginConf{}
 	if err := json.Unmarshal(stdin, conf); err != nil {
-		logger.Log(context.Background(), slog.LevelError,
-			"Failed to parse network configuration",
-			getLogAttrs(),
-			slog.Any("error", err),
-		)
-		return nil, fmt.Errorf("failed to parse network configuration: %v", err)
+		return nil, logAndWrap(ctx, "failed to parse network configuration", err)
 	}
 	return conf, nil
 }
 
 // setupPluginLogging configures the logger based on `Logging` fields in the plugin config.
-func setupPluginLogging(conf *PluginConf) error {
+func setupPluginLogging(ctx context.Context, conf *PluginConf) error {
 	if !conf.Logging.Enable {
 		return nil
 	}
@@ -174,27 +162,17 @@ func setupPluginLogging(conf *PluginConf) error {
 }
 
 // parsePrevResult checks if `RawPrevResult` is present and converts it to `current.Result`.
-func parsePrevResult(conf *PluginConf) error {
+func parsePrevResult(ctx context.Context, conf *PluginConf) error {
 	if conf.RawPrevResult == nil {
 		return nil // Nothing to parse
 	}
 	if err := version.ParsePrevResult(&conf.NetConf); err != nil {
-		logger.Log(context.Background(), slog.LevelError,
-			"Could not parse prevResult",
-			getLogAttrs(),
-			slog.Any("error", err),
-		)
-		return fmt.Errorf("could not parse prevResult: %v", err)
+		return logAndWrap(ctx, "could not parse prevResult", err)
 	}
 
 	result, err := current.NewResultFromResult(conf.PrevResult)
 	if err != nil {
-		logger.Log(context.Background(), slog.LevelError,
-			"Failed to convert prevResult to current.Result",
-			getLogAttrs(),
-			slog.Any("error", err),
-		)
-		return fmt.Errorf("failed to convert prevResult to current.Result: %v", err)
+		return logAndWrap(ctx, "failed to convert prevResult to current.Result", err)
 	}
 
 	if len(result.Interfaces) == 0 {
@@ -207,20 +185,31 @@ func parsePrevResult(conf *PluginConf) error {
 	return nil
 }
 
-// applyAdditionalRules merges any additional rules and metadata from CNI args into the config.
-func applyAdditionalRules(conf *PluginConf, additionalRules []iptables.OutboundRule, argsMetadata map[string]string) {
-	if len(argsMetadata) > 0 && conf.Metadata == nil {
-		conf.Metadata = make(map[string]string)
+// applyDefaults sets default values for the configuration
+func applyDefaults(ctx context.Context, conf *PluginConf) {
+	if conf.MainChainName == "" {
+		logger.Log(ctx, slog.LevelInfo,
+			"Using default MainChainName: CNI-OUTBOUND", getLogAttrs())
+		conf.MainChainName = "CNI-OUTBOUND"
 	}
-	if len(additionalRules) > 0 {
-		logger.Log(context.Background(), slog.LevelInfo,
-			"Appending additional rules",
-			getLogAttrs(),
-			slog.Int("ruleCount", len(additionalRules)),
-		)
-		conf.OutboundRules = append(conf.OutboundRules, additionalRules...)
+	if conf.DefaultAction == "" {
+		logger.Log(ctx, slog.LevelInfo,
+			"Using default DefaultAction: DROP", getLogAttrs())
+		conf.DefaultAction = "DROP"
 	}
+
+	if conf.DryRun {
+		logger.Log(ctx, slog.LevelInfo,
+			"Dry run mode enabled - traffic will be logged but not blocked", getLogAttrs())
+	}
+}
+
+// mergeMetadata merges metadata from different sources into a single map
+func mergeMetadata(conf *PluginConf, argsMetadata map[string]string) {
 	if len(argsMetadata) > 0 {
+		if conf.Metadata == nil {
+			conf.Metadata = make(map[string]string)
+		}
 		maps.Copy(conf.Metadata, argsMetadata)
 		maps.Copy(metadata, conf.Metadata)
 	}
@@ -229,163 +218,101 @@ func applyAdditionalRules(conf *PluginConf, additionalRules []iptables.OutboundR
 // parseConfig is the main entry for reading stdin config + CNI_ARGS.
 // It delegates to smaller helper functions for clarity.
 func parseConfig(stdin []byte, args, containerID string) (*PluginConf, error) {
-	additionalRules, argsMetadata, err := parseArgs(args)
+	// Create a context for this operation
+	ctx := context.Background()
+
+	// Initialize base metadata
+	metadata["component"] = "CNI-Outbound"
+	metadata["containerID"] = containerID
+
+	// Step 1: Parse the JSON config
+	conf, err := readJSONConfig(ctx, stdin)
 	if err != nil {
 		return nil, err
 	}
 
-	conf, err := readJSONConfig(stdin)
+	// Step 2: Parse additional rules from args
+	additionalRules, argsMetadata, err := parseArgs(ctx, args)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := setupPluginLogging(conf); err != nil {
-		logger.Log(context.Background(), slog.LevelError,
-			"Failed to setup logging",
-			getLogAttrs(),
-			slog.Any("error", err),
-		)
-		return nil, fmt.Errorf("failed to setup logging: %v", err)
+	// Step 3: Set up logging
+	if err := setupPluginLogging(ctx, conf); err != nil {
+		return nil, logAndWrap(ctx, "failed to setup logging", err)
 	}
 
-	if conf.DryRun {
-		logger.Log(context.Background(), slog.LevelInfo,
-			"Dry run mode enabled - traffic will be logged but not blocked",
-			getLogAttrs(),
-		)
-	}
-
-	logger.Log(context.Background(), slog.LevelInfo,
-		"Parsing configuration",
-		getLogAttrs(),
-	)
-
-	if err := parsePrevResult(conf); err != nil {
+	// Step 4: Parse previous result
+	if err := parsePrevResult(ctx, conf); err != nil {
 		return nil, err
 	}
 
-	applyAdditionalRules(conf, additionalRules, argsMetadata)
+	// Step 5: Apply additional rules
+	if len(additionalRules) > 0 {
+		logger.Log(ctx, slog.LevelInfo,
+			"Appending additional rules", getLogAttrs(),
+			slog.Int("ruleCount", len(additionalRules)))
+		conf.OutboundRules = append(conf.OutboundRules, additionalRules...)
+	}
 
-	// Set defaults if needed
-	if conf.MainChainName == "" {
-		logger.Log(context.Background(), slog.LevelInfo,
-			"Using default MainChainName: CNI-OUTBOUND",
-			getLogAttrs(),
-		)
-		conf.MainChainName = "CNI-OUTBOUND"
-	}
-	if conf.DefaultAction == "" {
-		logger.Log(context.Background(), slog.LevelInfo,
-			"Using default DefaultAction: DROP",
-			getLogAttrs(),
-		)
-		conf.DefaultAction = "DROP"
-	}
+	// Step 6: Merge metadata
+	mergeMetadata(conf, argsMetadata)
+
+	// Step 7: Apply defaults
+	applyDefaults(ctx, conf)
 
 	return conf, nil
 }
 
-func cmdAdd(args *skel.CmdArgs) error {
-	metadata["component"] = "CNI-Outbound"
-	metadata["containerID"] = args.ContainerID
+// setupIPTables creates and configures an iptables manager for the container
+func setupIPTables(ctx context.Context, conf *PluginConf, containerId, ifName string) (iptables.Manager, string, error) {
+	containerChain := utils.MustFormatChainNameWithPrefix(conf.Name, containerId, "OUT-")
+	logIdentifier := strings.Replace(containerChain, "CNI-OUT-", "", -1)
 
-	conf, err := parseConfig(args.StdinData, args.Args, args.ContainerID)
+	// Create IPTablesManager
+	iptManager, err := newIPTablesManager(conf, logIdentifier)
 	if err != nil {
-		logger.Log(context.Background(), slog.LevelError,
-			"Failed to parse config",
-			getLogAttrs(),
-			slog.Any("error", err),
-		)
-		return err
+		return nil, "", logAndWrap(ctx, "failed to create IPTablesManager", err)
 	}
 
-	logger.Log(context.Background(), slog.LevelInfo,
-		"CNI ADD called",
-		getLogAttrs(),
-	)
+	return iptManager, containerChain, nil
+}
 
-	logger.Log(context.Background(), slog.LevelInfo,
-		"Creating IPTablesManager",
-		getLogAttrs(),
-	)
-
-	containerChain := utils.MustFormatChainNameWithPrefix(conf.Name, args.ContainerID, "OUT-")
-	iptManager, err := newIPTablesManager(conf, strings.Replace(containerChain, "CNI-OUT-", "", -1))
-	if err != nil {
-		logger.Log(context.Background(), slog.LevelError,
-			"Failed to create IPTablesManager",
-			getLogAttrs(),
-			slog.Any("error", err),
-		)
-		return fmt.Errorf("failed to create IPTablesManager: %v", err)
-	}
-
-	logger.Log(context.Background(), slog.LevelInfo,
-		"Ensuring main chain exists",
-		getLogAttrs(),
-	)
-
+// setupContainerChain creates the container chain and add rules to it
+func setupContainerChain(ctx context.Context, iptManager iptables.Manager, chainName string, rules []iptables.OutboundRule) error {
+	// Ensure main chain exists
+	logger.Log(ctx, slog.LevelInfo, "Ensuring main chain exists", getLogAttrs())
 	if err := iptManager.EnsureMainChainExists(); err != nil {
-		logger.Log(context.Background(), slog.LevelError,
-			"Failed to ensure main chain exists",
-			getLogAttrs(),
-			slog.Any("error", err),
-		)
-		return fmt.Errorf("failed to ensure main chain exists: %v", err)
+		return logAndWrap(ctx, "failed to ensure main chain exists", err)
 	}
 
-	logger.Log(context.Background(), slog.LevelInfo,
-		"Creating container chain",
-		getLogAttrs(),
-	)
-
-	if err := iptManager.CreateContainerChain(containerChain); err != nil {
-		logger.Log(context.Background(), slog.LevelError,
-			"Failed to create container chain",
-			getLogAttrs(),
-			slog.Any("error", err),
-		)
-		return fmt.Errorf("failed to create container chain: %v", err)
+	// Create container chain
+	logger.Log(ctx, slog.LevelInfo, "Creating container chain", getLogAttrs())
+	if err := iptManager.CreateContainerChain(chainName); err != nil {
+		return logAndWrap(ctx, "failed to create container chain", err)
 	}
 
-	logger.Log(context.Background(), slog.LevelInfo,
-		"Adding rules to container chain",
-	)
-
-	for _, rule := range conf.OutboundRules {
-		logger.Log(context.Background(), slog.LevelInfo,
-			"Adding rule",
-			getLogAttrs(),
-			slog.Any("rule", rule),
-		)
-		if err := iptManager.AddRule(containerChain, rule); err != nil {
-			logger.Log(context.Background(), slog.LevelError,
-				"Failed to add rule to container chain",
-				getLogAttrs(),
-				slog.Any("error", err),
-				slog.Any("rule", rule),
-			)
-			return fmt.Errorf("failed to add rule to container chain: %v", err)
+	// Add rules to container chain
+	logger.Log(ctx, slog.LevelInfo, "Adding rules to container chain", getLogAttrs())
+	for _, rule := range rules {
+		logger.Log(ctx, slog.LevelInfo, "Adding rule", getLogAttrs(), slog.Any("rule", rule))
+		if err := iptManager.AddRule(chainName, rule); err != nil {
+			return logAndWrap(ctx, "failed to add rule to container chain", err)
 		}
 	}
 
-	logger.Log(context.Background(), slog.LevelInfo,
-		"Adding jump rule(s) to main chain for each IPv4",
-		getLogAttrs(),
-	)
+	return nil
+}
 
-	// We must have at least one IP from prevResult
+// addJumpRulesForIPs adds jump rules for each IPv4 address in the result
+func addJumpRulesForIPs(ctx context.Context, conf *PluginConf, iptManager iptables.Manager, containerChain string) error {
 	if conf.PrevResult == nil {
 		return fmt.Errorf("no prevResult found")
 	}
+
 	result, err := current.NewResultFromResult(conf.PrevResult)
 	if err != nil {
-		logger.Log(context.Background(), slog.LevelError,
-			"Failed to parse prevResult",
-			getLogAttrs(),
-			slog.Any("error", err),
-		)
-		return fmt.Errorf("failed to parse prevResult: %v", err)
+		return logAndWrap(ctx, "failed to parse prevResult", err)
 	}
 
 	var foundAnyIPv4 bool
@@ -397,205 +324,142 @@ func cmdAdd(args *skel.CmdArgs) error {
 		foundAnyIPv4 = true
 		containerIP := ipv4Addr.String()
 
-		logger.Log(context.Background(), slog.LevelInfo,
-			"Container IPv4 obtained",
-			getLogAttrs(),
-			slog.String("ip", containerIP),
-		)
+		logger.Log(ctx, slog.LevelInfo,
+			"Container IPv4 obtained", getLogAttrs(), slog.String("ip", containerIP))
 
 		if err := iptManager.AddJumpRule(containerIP, containerChain); err != nil {
-			logger.Log(context.Background(), slog.LevelError,
-				"Failed to add jump rule to main chain",
-				getLogAttrs(),
-				slog.Any("error", err),
-			)
-			return fmt.Errorf("failed to add jump rule to main chain: %v", err)
+			return logAndWrap(ctx, "failed to add jump rule to main chain", err)
 		}
 	}
 
 	if !foundAnyIPv4 {
-		logger.Log(context.Background(), slog.LevelError,
-			"No IPv4 addresses found in prevResult",
-			getLogAttrs(),
-		)
+		logger.Log(ctx, slog.LevelError,
+			"No IPv4 addresses found in prevResult", getLogAttrs())
 		return fmt.Errorf("no IPv4 addresses found in prevResult")
 	}
 
-	logger.Log(context.Background(), slog.LevelInfo,
-		"CNI ADD completed successfully",
-		getLogAttrs(),
-	)
+	return nil
+}
+
+func cmdAdd(args *skel.CmdArgs) error {
+	// Parse configuration
+	conf, err := parseConfig(args.StdinData, args.Args, args.ContainerID)
+	if err != nil {
+		return err
+	}
+
+	// Create a context for this operation
+	ctx := context.Background()
+
+	logger.Log(ctx, slog.LevelInfo, "CNI ADD called", getLogAttrs())
+
+	// Setup iptables
+	iptManager, containerChain, err := setupIPTables(ctx, conf, args.ContainerID, args.IfName)
+	if err != nil {
+		return err
+	}
+
+	// Create container chain and add rules
+	if err := setupContainerChain(ctx, iptManager, containerChain, conf.OutboundRules); err != nil {
+		return err
+	}
+
+	// Add jump rules for IPs
+	if err := addJumpRulesForIPs(ctx, conf, iptManager, containerChain); err != nil {
+		return err
+	}
+
+	logger.Log(ctx, slog.LevelInfo, "CNI ADD completed successfully", getLogAttrs())
+
+	result, _ := current.NewResultFromResult(conf.PrevResult)
 	return types.PrintResult(result, conf.CNIVersion)
 }
 
 func cmdDel(args *skel.CmdArgs) error {
-	metadata["component"] = "CNI-Outbound"
-	metadata["containerID"] = args.ContainerID
-
+	// Parse configuration
 	conf, err := parseConfig(args.StdinData, args.Args, args.ContainerID)
 	if err != nil {
-		logger.Log(context.Background(), slog.LevelError,
-			"Failed to parse config",
-			getLogAttrs(),
-			slog.Any("error", err),
-		)
 		return err
 	}
 
-	logger.Log(context.Background(), slog.LevelInfo,
-		"CNI DEL called",
-		getLogAttrs(),
-	)
+	// Create a context for this operation
+	ctx := context.Background()
 
-	logger.Log(context.Background(), slog.LevelInfo,
-		"Creating IPTablesManager",
-		getLogAttrs(),
-	)
+	logger.Log(ctx, slog.LevelInfo, "CNI DEL called", getLogAttrs())
 
-	containerChain := utils.MustFormatChainNameWithPrefix(conf.Name, args.ContainerID, "OUT-")
-	iptManager, err := newIPTablesManager(conf, strings.Replace(containerChain, "CNI-OUT-", "", -1))
+	// Setup iptables
+	iptManager, containerChain, err := setupIPTables(ctx, conf, args.ContainerID, args.IfName)
 	if err != nil {
-		logger.Log(context.Background(), slog.LevelError,
-			"Failed to create IPTablesManager",
-			getLogAttrs(),
-			slog.Any("error", err),
-		)
-		return fmt.Errorf("failed to create IPTablesManager: %v", err)
+		return err
 	}
 
-	logger.Log(context.Background(), slog.LevelInfo,
-		"Removing container chain",
-		getLogAttrs(),
-	)
-
+	// Remove jump rule
+	logger.Log(ctx, slog.LevelInfo, "Removing container chain", getLogAttrs())
 	if err := iptManager.RemoveJumpRuleByTargetChain(containerChain); err != nil {
-		logger.Log(context.Background(), slog.LevelWarn,
-			"Failed to remove jump rule from main chain",
-			getLogAttrs(),
-			slog.Any("error", err),
-		)
+		logger.Log(ctx, slog.LevelWarn,
+			"Failed to remove jump rule from main chain", getLogAttrs(), slog.Any("error", err))
+		// Continue despite error - we still want to try to clean up the chain
 	}
 
-	logger.Log(context.Background(), slog.LevelInfo,
-		"Clearing and deleting container chain",
-		getLogAttrs(),
-	)
-
+	// Clear and delete container chain
+	logger.Log(ctx, slog.LevelInfo, "Clearing and deleting container chain", getLogAttrs())
 	if err := iptManager.ClearAndDeleteChain(containerChain); err != nil {
-		logger.Log(context.Background(), slog.LevelError,
-			"Failed to clear and delete container chain",
-			getLogAttrs(),
-			slog.Any("error", err),
-		)
-		return fmt.Errorf("failed to clear and delete container chain: %v", err)
+		return logAndWrap(ctx, "failed to clear and delete container chain", err)
 	}
 
-	logger.Log(context.Background(), slog.LevelInfo,
-		"CNI DEL completed successfully",
-		getLogAttrs(),
-	)
+	logger.Log(ctx, slog.LevelInfo, "CNI DEL completed successfully", getLogAttrs())
 	return nil
 }
 
 func cmdCheck(args *skel.CmdArgs) error {
-	metadata["component"] = "CNI-Outbound"
-	metadata["containerID"] = args.ContainerID
-
+	// Parse configuration
 	conf, err := parseConfig(args.StdinData, args.Args, args.ContainerID)
 	if err != nil {
-		logger.Log(context.Background(), slog.LevelError,
-			"Failed to parse config",
-			getLogAttrs(),
-			slog.Any("error", err),
-		)
 		return err
 	}
 
-	logger.Log(context.Background(), slog.LevelInfo,
-		"CNI CHECK called",
-		getLogAttrs(),
-	)
+	// Create a context for this operation
+	ctx := context.Background()
 
-	logger.Log(context.Background(), slog.LevelInfo,
-		"Creating IPTablesManager",
-		getLogAttrs(),
-	)
+	logger.Log(ctx, slog.LevelInfo, "CNI CHECK called", getLogAttrs())
 
-	containerChain := utils.MustFormatChainNameWithPrefix(conf.Name, args.ContainerID, "OUT-")
-	iptManager, err := newIPTablesManager(conf, strings.Replace(containerChain, "CNI-OUT-", "", -1))
+	// Setup iptables
+	iptManager, containerChain, err := setupIPTables(ctx, conf, args.ContainerID, args.IfName)
 	if err != nil {
-		logger.Log(context.Background(), slog.LevelError,
-			"Failed to create IPTablesManager",
-			getLogAttrs(),
-			slog.Any("error", err),
-		)
-		return fmt.Errorf("failed to create IPTablesManager: %v", err)
+		return err
 	}
 
-	logger.Log(context.Background(), slog.LevelInfo,
-		"Checking if main chain exists",
-		getLogAttrs(),
-	)
-
+	// Check main chain
+	logger.Log(ctx, slog.LevelInfo, "Checking if main chain exists", getLogAttrs())
 	exists, err := iptManager.ChainExists(conf.MainChainName)
 	if err != nil {
-		logger.Log(context.Background(), slog.LevelError,
-			"Failed to check if main chain exists",
-			getLogAttrs(),
-			slog.Any("error", err),
-		)
-		return fmt.Errorf("failed to check if main chain exists: %v", err)
+		return logAndWrap(ctx, "failed to check if main chain exists", err)
 	}
 	if !exists {
-		logger.Log(context.Background(), slog.LevelError,
-			"Main chain does not exist",
-			getLogAttrs(),
-			slog.String("chain", conf.MainChainName),
-		)
+		logger.Log(ctx, slog.LevelError,
+			"Main chain does not exist", getLogAttrs(), slog.String("chain", conf.MainChainName))
 		return fmt.Errorf("main chain %s does not exist", conf.MainChainName)
 	}
 
-	logger.Log(context.Background(), slog.LevelInfo,
-		"Checking container chain",
-		getLogAttrs(),
-	)
-
+	// Check container chain
+	logger.Log(ctx, slog.LevelInfo, "Checking container chain", getLogAttrs())
 	exists, err = iptManager.ChainExists(containerChain)
 	if err != nil {
-		logger.Log(context.Background(), slog.LevelError,
-			"Failed to check if container chain exists",
-			getLogAttrs(),
-			slog.Any("error", err),
-		)
-		return fmt.Errorf("failed to check if container chain exists: %v", err)
+		return logAndWrap(ctx, "failed to check if container chain exists", err)
 	}
 	if !exists {
-		logger.Log(context.Background(), slog.LevelError,
-			"Container chain does not exist",
-			getLogAttrs(),
-			slog.String("chain", containerChain),
-		)
+		logger.Log(ctx, slog.LevelError,
+			"Container chain does not exist", getLogAttrs(), slog.String("chain", containerChain))
 		return fmt.Errorf("container chain %s does not exist", containerChain)
 	}
 
-	logger.Log(context.Background(), slog.LevelInfo,
-		"Verifying rules in container chain",
-		getLogAttrs(),
-	)
-
+	// Verify rules
+	logger.Log(ctx, slog.LevelInfo, "Verifying rules in container chain", getLogAttrs())
 	if err := iptManager.VerifyRules(containerChain, conf.OutboundRules); err != nil {
-		logger.Log(context.Background(), slog.LevelError,
-			"Rule verification failed",
-			getLogAttrs(),
-			slog.Any("error", err),
-		)
-		return fmt.Errorf("rule verification failed: %v", err)
+		return logAndWrap(ctx, "rule verification failed", err)
 	}
 
-	logger.Log(context.Background(), slog.LevelInfo,
-		"CNI CHECK completed successfully",
-		getLogAttrs(),
-	)
+	logger.Log(ctx, slog.LevelInfo, "CNI CHECK completed successfully", getLogAttrs())
 	return nil
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
@@ -1448,6 +1449,7 @@ func TestSetupLogging(t *testing.T) {
 		t.Fatalf("Failed to create temp directory: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
+	ctx := context.Background()
 
 	testCases := []struct {
 		name        string
@@ -1518,13 +1520,15 @@ func TestSetupLogging(t *testing.T) {
 				Logging: tc.config,
 			}
 
-			err := setupPluginLogging(conf)
+			err := setupPluginLogging(ctx, conf)
 			tc.validate(t, err)
 		})
 	}
 }
 
 func TestParseAdditionalRules(t *testing.T) {
+	ctx := context.Background()
+
 	testCases := []struct {
 		name          string
 		args          string
@@ -1555,7 +1559,7 @@ func TestParseAdditionalRules(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			rules, _, err := parseArgs(tc.args)
+			rules, _, err := parseArgs(ctx, tc.args)
 			if tc.expectedError {
 				assert.Error(t, err)
 			} else {
@@ -1573,6 +1577,8 @@ func TestParseAdditionalRules(t *testing.T) {
 func TestParseArgsWithLogging(t *testing.T) {
 	// Setup logger for testing
 	var logBuffer strings.Builder
+	ctx := context.Context(context.Background())
+
 	logger = slog.New(slog.NewTextHandler(&logBuffer, nil))
 
 	testCases := []struct {
@@ -1623,7 +1629,7 @@ func TestParseArgsWithLogging(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			logBuffer.Reset()
 
-			rules, metadata, err := parseArgs(tc.args)
+			rules, metadata, err := parseArgs(ctx, tc.args)
 
 			if tc.expectError {
 				assert.Error(t, err)
@@ -1645,6 +1651,8 @@ func TestParseArgsWithLogging(t *testing.T) {
 }
 
 func TestParseArgs(t *testing.T) {
+	ctx := context.Background()
+
 	testCases := []struct {
 		name          string
 		args          string
@@ -1707,7 +1715,7 @@ func TestParseArgs(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			rules, meta, err := parseArgs(tc.args)
+			rules, meta, err := parseArgs(ctx, tc.args)
 
 			if tc.expectError {
 				assert.Error(t, err)
